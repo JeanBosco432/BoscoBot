@@ -5,6 +5,7 @@ import html
 import sqlite3
 import datetime as dt
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote as urlquote
 
 import httpx
 from dotenv import load_dotenv
@@ -48,6 +49,7 @@ FEDAPAY_API_KEY = (os.getenv("FEDAPAY_API_KEY") or "").strip()
 FEDAPAY_BASE = (os.getenv("FEDAPAY_BASE") or "https://api.fedapay.com/v1").strip()
 if not FEDAPAY_BASE.startswith(("http://", "https://")):
     FEDAPAY_BASE = "https://" + FEDAPAY_BASE
+FEDAPAY_BASE = FEDAPAY_BASE.rstrip("/")
 
 ADMIN_IDS = {
     int(x.strip())
@@ -85,8 +87,8 @@ MATCHES_PER_LEAGUE_MAX = int(os.getenv("MATCHES_PER_LEAGUE_MAX", "10"))
 
 # =============================
 # FOOTBALL LEAGUES (IDs via API-FOOTBALL)
-# Keep all requested (5 major + UEFA cups + others you added)
 # =============================
+# ✅ Mise à jour : LDC / Europa League / Conference League inclus
 FOOT_LEAGUES_FIXED: Dict[str, int] = {
     "Premier League (Angleterre)": 39,
     "LaLiga (Espagne)": 140,
@@ -118,7 +120,7 @@ WELCOME_TEXT = (
     "Je vous aide à :\n"
     "✅ Voir les matchs (par date)\n"
     "✅ Consulter le <b>coupon du jour</b>\n"
-    "✅ Gérer votre <b>capital</b> (règles simples)\n"
+    "✅ Gérer votre <b>capital</b> (calcul automatique)\n"
     "✅ Accéder aux fonctionnalités selon votre abonnement\n\n"
     "📌 Tapez <b>stat</b> ou cliquez sur <b>Menu</b>."
 )
@@ -136,7 +138,7 @@ HELP_TEXT = (
     "• /abonnement → choisir un plan → payer → <b>J’ai déjà payé</b>\n"
     "• /status\n\n"
     "💰 <b>Capital</b>\n"
-    "• /capital\n\n"
+    "• /capital (calcul de mise)\n\n"
     "📌 Tapez <b>stat</b> pour le menu."
 )
 
@@ -157,14 +159,22 @@ UNKNOWN_TEXT = (
     "ou utilisez /help."
 )
 
-CAPITAL_TEXT = (
+CAPITAL_RULES_TEXT = (
     "💰 <b>Gestion du capital</b>\n\n"
     "Règle simple (selon le nombre de matchs du coupon) :\n"
     "• Code 2 → miser <b>15%</b> du capital\n"
     "• Code 3 → miser <b>10%</b> du capital\n"
     "• Code 5 → miser <b>8%</b> du capital\n"
     "• Code 7 et + → miser <b>5%</b> du capital\n\n"
-    "📌 Le “code” = nombre de matchs sur le coupon."
+    "📌 Le “code” = nombre de matchs sur le coupon.\n"
+    "✅ Utilisez <b>Calculer</b> pour obtenir la mise exacte."
+)
+
+CAPITAL_START_TEXT = (
+    "💰 <b>Calcul de mise</b>\n\n"
+    "1) Envoyez votre <b>capital total</b> (ex: 100000)\n"
+    "2) Puis envoyez le <b>code</b> (= nombre de matchs du coupon, ex: 2, 3, 5, 7)\n\n"
+    "➡️ Envoyez maintenant votre <b>capital</b>."
 )
 
 # =============================
@@ -424,11 +434,6 @@ async def resolve_league_id_dynamic(label: str, country: str, name: str, cache: 
 # FedaPay verification
 # =============================
 async def fedapay_is_paid_by_reference(ref: str) -> Tuple[bool, str]:
-    """
-    Verify payment using merchant_reference.
-    Endpoint documented: /transactions/merchant/{reference}
-    Success status usually 'approved'. :contentReference[oaicite:1]{index=1}
-    """
     if not FEDAPAY_API_KEY:
         return False, "FEDAPAY_API_KEY manquante"
 
@@ -436,7 +441,7 @@ async def fedapay_is_paid_by_reference(ref: str) -> Tuple[bool, str]:
     if not reference:
         return False, "Référence vide"
 
-    url = f"{FEDAPAY_BASE}/transactions/merchant/{httpx.utils.quote(reference, safe='')}"
+    url = f"{FEDAPAY_BASE}/transactions/merchant/{urlquote(reference, safe='')}"
     headers = {"Authorization": f"Bearer {FEDAPAY_API_KEY}"}
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -446,7 +451,6 @@ async def fedapay_is_paid_by_reference(ref: str) -> Tuple[bool, str]:
         r.raise_for_status()
         data = r.json()
 
-    # Depending on API shape, transaction may be at top-level or under key
     tx = data.get("transaction") or data.get("data") or data
     status = str(tx.get("status") or "").lower()
 
@@ -474,6 +478,37 @@ def subscription_inline_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(kb)
 
+def capital_inline_keyboard() -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton("🧮 Calculer la mise", callback_data="CAP_CALC")],
+        [InlineKeyboardButton("📘 Règles capital", callback_data="CAP_RULES")],
+        [InlineKeyboardButton("⬅️ Menu", callback_data="CAP_BACK")],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+# =============================
+# Capital logic
+# =============================
+def capital_percent_for_code(code: int) -> float:
+    # Règles demandées
+    if code == 2:
+        return 0.15
+    if code == 3:
+        return 0.10
+    if code == 5:
+        return 0.08
+    if code >= 7:
+        return 0.05
+    # fallback (si l'utilisateur met 4, 6, etc.)
+    # on applique 8% par défaut (le plus proche)
+    return 0.08
+
+def format_amount(x: float) -> str:
+    try:
+        return f"{int(round(x)):,}".replace(",", " ")
+    except Exception:
+        return str(x)
+
 # =============================
 # Commands
 # =============================
@@ -489,13 +524,17 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
     await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
 
+async def howpay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    upsert_user(update)
+    await update.message.reply_text(HOW_PAY_TEXT, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
+
 async def description_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
     txt = (
         f"ℹ️ <b>{BOT_NAME}</b>\n\n"
         "• Liste des matchs par championnat et par date\n"
         "• Coupon du jour (publié par l’admin)\n"
-        "• Gestion du capital (règles simples)\n"
+        "• Gestion du capital (calcul de mise)\n"
         "• Abonnements Standard / VIP / VVIP\n\n"
         "📌 Tapez <b>stat</b> pour le menu."
     )
@@ -503,7 +542,14 @@ async def description_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def capital_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
-    await update.message.reply_text(CAPITAL_TEXT, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
+    # Menu capital direct + fonctionnel
+    context.user_data.pop("awaiting_capital_amount", None)
+    context.user_data.pop("awaiting_capital_code", None)
+    await update.message.reply_text(
+        "💰 <b>Capital</b>\n\nChoisissez une option :",
+        parse_mode=ParseMode.HTML,
+        reply_markup=capital_inline_keyboard(),
+    )
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
@@ -602,7 +648,8 @@ async def coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
     chat_id = update.effective_chat.id
 
-    plan = "ADMIN" if is_admin(update) else (get_sub(chat_id)["plan"] if get_sub(chat_id) else None)
+    sub = get_sub(chat_id)
+    plan = "ADMIN" if is_admin(update) else (sub["plan"] if sub else None)
     if not plan:
         await update.message.reply_text("🔒 Coupon réservé aux abonnés. Faites /abonnement.", parse_mode=ParseMode.HTML)
         return
@@ -639,7 +686,6 @@ async def publier_coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("⛔ Réservé à l’admin.")
         return
 
-    # Usage: /publier_coupon CODE | Texte...
     raw = update.message.text or ""
     parts = raw.split(" ", 1)
     if len(parts) < 2 or "|" not in parts[1]:
@@ -660,7 +706,6 @@ async def publier_coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     day = now_paris().date().isoformat()
     created_by = update.effective_user.id if update.effective_user else 0
 
-    # store
     with db() as con:
         con.execute("""
         INSERT INTO coupon_day(day, coupon_code, coupon_text, created_by, created_at)
@@ -672,7 +717,6 @@ async def publier_coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
             created_at=excluded.created_at
         """, (day, coupon_code, coupon_text, created_by, now_paris().isoformat()))
 
-    # notify users
     with db() as con:
         users = con.execute("SELECT chat_id FROM users").fetchall()
 
@@ -681,7 +725,7 @@ async def publier_coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try:
             await context.bot.send_message(
                 chat_id=cid,
-                text=f"📌 <b>Coupon du jour disponible ✅</b>\n➡️ Faites /coupon",
+                text="📌 <b>Coupon du jour disponible ✅</b>\n➡️ Faites /coupon",
                 parse_mode=ParseMode.HTML
             )
             sent += 1
@@ -691,7 +735,7 @@ async def publier_coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(f"✅ Coupon publié. Notifications envoyées : {sent}")
 
 # =============================
-# Callback handling (subscriptions)
+# Callback handling (subscriptions + capital)
 # =============================
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -702,6 +746,28 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = q.data or ""
 
+    # ---- CAPITAL
+    if data == "CAP_BACK":
+        await q.edit_message_text("📌 <b>Menu</b> :", parse_mode=ParseMode.HTML)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="📌 <b>Menu</b> :",
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    if data == "CAP_RULES":
+        await q.edit_message_text(CAPITAL_RULES_TEXT, parse_mode=ParseMode.HTML, reply_markup=capital_inline_keyboard())
+        return
+
+    if data == "CAP_CALC":
+        context.user_data["awaiting_capital_amount"] = True
+        context.user_data.pop("awaiting_capital_code", None)
+        await q.edit_message_text(CAPITAL_START_TEXT, parse_mode=ParseMode.HTML, reply_markup=capital_inline_keyboard())
+        return
+
+    # ---- SUBSCRIPTIONS
     if data == "SUB_HELP":
         await q.edit_message_text(HOW_PAY_TEXT, parse_mode=ParseMode.HTML, reply_markup=subscription_inline_keyboard())
         return
@@ -739,14 +805,69 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 # =============================
-# Text handler (menu buttons + paid flow + "stat")
+# Text handler (menu buttons + paid flow + stat + capital flow)
 # =============================
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
     chat_id = update.effective_chat.id
     msg = (update.message.text or "").strip()
 
-    # Paid flow: expecting ref
+    # =========================
+    # CAPITAL FLOW
+    # =========================
+    if context.user_data.get("awaiting_capital_amount"):
+        # Expect amount
+        s = msg.replace(" ", "").replace(",", "").replace("f", "").replace("F", "")
+        if not re.fullmatch(r"\d+(\.\d+)?", s):
+            await update.message.reply_text("❌ Envoyez un montant valide (ex: 100000).")
+            return
+        amount = float(s)
+        if amount <= 0:
+            await update.message.reply_text("❌ Le capital doit être > 0.")
+            return
+
+        context.user_data["capital_amount"] = amount
+        context.user_data["awaiting_capital_amount"] = False
+        context.user_data["awaiting_capital_code"] = True
+
+        await update.message.reply_text(
+            "✅ Capital reçu.\n➡️ Envoyez maintenant le <b>code</b> (nombre de matchs du coupon : 2, 3, 5, 7...)",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if context.user_data.get("awaiting_capital_code"):
+        s = msg.strip()
+        if not s.isdigit():
+            await update.message.reply_text("❌ Envoyez un code valide (ex: 2, 3, 5, 7).")
+            return
+        code = int(s)
+        if code <= 0:
+            await update.message.reply_text("❌ Le code doit être >= 1.")
+            return
+
+        amount = float(context.user_data.get("capital_amount", 0.0))
+        pct = capital_percent_for_code(code)
+        stake = amount * pct
+
+        context.user_data.pop("awaiting_capital_code", None)
+        context.user_data.pop("capital_amount", None)
+
+        await update.message.reply_text(
+            "✅ <b>Résultat</b>\n\n"
+            f"💼 Capital : <b>{html.escape(format_amount(amount))}</b>\n"
+            f"🔢 Code : <b>{code}</b> match(s)\n"
+            f"📊 Pourcentage : <b>{int(pct*100)}%</b>\n"
+            f"🎯 Mise conseillée : <b>{html.escape(format_amount(stake))}</b>\n\n"
+            "📌 Pour recommencer : /capital",
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    # =========================
+    # PAID FLOW: expecting ref
+    # =========================
     plan_wait = context.user_data.get("awaiting_ref_plan")
     if plan_wait:
         ref = msg.strip()
@@ -779,7 +900,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await tmp.edit_text(f"⚠️ Erreur vérification : {html.escape(str(e))}", parse_mode=ParseMode.HTML)
             return
 
+    # =========================
     # Menu shortcuts
+    # =========================
     low = msg.lower()
 
     if low == "stat":
@@ -827,7 +950,7 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("howpay", lambda u, c: u.message.reply_text(HOW_PAY_TEXT, parse_mode=ParseMode.HTML)))
+    app.add_handler(CommandHandler("howpay", howpay_cmd))
     app.add_handler(CommandHandler("abonnement", abonnement_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("capital", capital_cmd))
