@@ -65,14 +65,17 @@ PARIS_TZ_HOURS = int(os.getenv("PARIS_TZ_HOURS", "1"))
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 
 # Subscription duration
-SUB_DURATION_DAYS = 30
+SUB_DURATION_DAYS = int(os.getenv("SUB_DURATION_DAYS", "30"))
 
 # Plan limits
-STANDARD_COUPONS_PER_DAY = 1
-VIP_COUPONS_PER_DAY = 2
+STANDARD_COUPONS_PER_DAY = int(os.getenv("STANDARD_COUPONS_PER_DAY", "1"))
+VIP_COUPONS_PER_DAY = int(os.getenv("VIP_COUPONS_PER_DAY", "2"))
 
 STANDARD_ANALYSES_PER_MONTH = int(os.getenv("STANDARD_ANALYSES_PER_MONTH", "5"))
-VIP_ANALYSES_PER_MONTH = 10
+VIP_ANALYSES_PER_MONTH = int(os.getenv("VIP_ANALYSES_PER_MONTH", "10"))
+
+# FREE analyses/week
+FREE_ANALYSES_PER_WEEK = int(os.getenv("FREE_ANALYSES_PER_WEEK", "5"))
 
 VIP_CHANNEL_LINK = "https://t.me/+fo_0a8c5d_43ZThk"
 
@@ -86,7 +89,7 @@ PAY_LINKS = {
 # How many matches to show per league
 MATCHES_PER_LEAGUE_MAX = int(os.getenv("MATCHES_PER_LEAGUE_MAX", "10"))
 
-# Analyse: fiabilité minimale
+# Analyse: fiabilité minimale + nombre de picks recommandés
 ANALYSIS_MIN_CONF = float(os.getenv("ANALYSIS_MIN_CONF", "0.85"))  # 85%
 ANALYSIS_MAX_PICKS = int(os.getenv("ANALYSIS_MAX_PICKS", "3"))     # 2-3 picks max (par défaut 3)
 ANALYSIS_MAX_H2H = int(os.getenv("ANALYSIS_MAX_H2H", "10"))
@@ -99,25 +102,42 @@ ANALYSIS_CONCURRENCY = int(os.getenv("ANALYSIS_CONCURRENCY", "5"))
 
 # =============================
 # FOOTBALL LEAGUES (IDs via API-FOOTBALL)
+# Priorité: UEFA cups + grandes ligues + D2
 # =============================
 FOOT_LEAGUES_FIXED: Dict[str, int] = {
-    "Premier League (Angleterre)": 39,
-    "LaLiga (Espagne)": 140,
-    "Ligue 1 (France)": 61,
-    "Serie A (Italie)": 135,
-    "Bundesliga (Allemagne)": 78,
+    # UEFA (priorité)
     "UEFA Champions League": 2,
     "UEFA Europa League": 3,
     "UEFA Europa Conference League": 848,
-}
 
-FOOT_LEAGUES_DYNAMIC: List[Dict[str, str]] = [
-    {"label": "Premier League (Russie)", "country": "Russia", "name": "Premier League"},
-    {"label": "Eredivisie (Pays-Bas)", "country": "Netherlands", "name": "Eredivisie"},
-    {"label": "Primeira Liga (Portugal)", "country": "Portugal", "name": "Primeira Liga"},
-    {"label": "Süper Lig (Turquie)", "country": "Turkey", "name": "Süper Lig"},
-    {"label": "Saudi Pro League (Arabie Saoudite)", "country": "Saudi-Arabia", "name": "Pro League"},
-]
+    # Top 5 + D2
+    "Angleterre — Premier League": 39,
+    "Angleterre — Championship (D2)": 40,
+
+    "France — Ligue 1": 61,
+    "France — Ligue 2 (D2)": 62,
+
+    "Espagne — LaLiga": 140,
+    "Espagne — Segunda (D2)": 141,
+
+    "Italie — Serie A": 135,
+    "Italie — Serie B (D2)": 136,
+
+    "Allemagne — Bundesliga": 78,
+    "Allemagne — Bundesliga 2 (D2)": 79,
+
+    # Portugal + D2
+    "Portugal — Primeira Liga": 94,
+    "Portugal — Liga Portugal 2 (D2)": 95,
+
+    # Pays-Bas + D2
+    "Pays-Bas — Eredivisie": 88,
+    "Pays-Bas — Eerste Divisie (D2)": 89,
+
+    # Turquie + D2
+    "Turquie — Süper Lig": 203,
+    "Turquie — 1. Lig (D2)": 204,
+}
 
 LEAGUE_CACHE_FILE = os.getenv("LEAGUE_CACHE_FILE", "league_cache.json")
 
@@ -129,7 +149,7 @@ BOT_NAME = "BoscoBot"
 WELCOME_TEXT = (
     f"👋 <b>Bienvenue sur {BOT_NAME}</b> ⚽📊\n\n"
     "Je vous aide à :\n"
-    "✅ Voir les matchs (par date)\n"
+    "✅ Voir les matchs (boutons)\n"
     "✅ Lancer une <b>analyse</b> simple et fiable\n"
     "✅ Consulter le <b>coupon du jour</b>\n"
     "✅ Gérer votre <b>capital</b> (calcul automatique)\n"
@@ -137,40 +157,47 @@ WELCOME_TEXT = (
     "📌 Tapez <b>stat</b> ou utilisez le menu en bas."
 )
 
+UNKNOWN_TEXT = (
+    "🤖 Je n’ai pas reconnu.\n\n"
+    "➡️ Tapez <b>stat</b> pour le menu\n"
+    "ou utilisez /help."
+)
+
 HELP_TEXT = (
     "🧭 <b>Aide</b>\n\n"
     "📅 <b>Matchs</b>\n"
-    "• /matches\n"
-    "• /matches demain\n"
-    "• /matches apres-demain\n"
-    "• /matches AAAA-MM-JJ\n\n"
+    "• Utilisez le bouton <b>📅 Matchs</b> (recommandé)\n"
+    "• ou /matches demain | /matches 2026-03-01\n\n"
     "🔎 <b>Analyse</b>\n"
-    "• /analyse &lt;ID_MATCH&gt;\n"
-    "   Exemple : <code>/analyse 123456</code>\n\n"
+    "• Cliquez <b>🔎 Analyser</b> sous un match (recommandé)\n\n"
     "🎟️ <b>Coupon</b>\n"
-    "• /coupon\n\n"
+    "• /coupon ou bouton <b>🎟️ Coupon du jour</b>\n\n"
     "💳 <b>Abonnement</b>\n"
-    "• /abonnement → choisir un plan → payer → <b>J’ai déjà payé</b>\n"
+    "• bouton <b>💳 Abonnement</b> → payer → <b>✅ J’ai déjà payé</b>\n"
     "• /status\n\n"
     "💰 <b>Capital</b>\n"
-    "• /capital (calcul de mise)\n\n"
+    "• bouton <b>💰 Capital</b>\n\n"
     "📌 Tapez <b>stat</b> pour le menu."
 )
 
 HOW_PAY_TEXT = (
     "💳 <b>Comment activer l’abonnement</b>\n\n"
     "1) Cliquez sur un plan (Standard / VIP / VVIP)\n"
-    "2) Sur la page FedaPay, mettez le <b>code</b> dans <b>Référence de paiement</b>\n"
+    "2) Sur la page FedaPay, collez votre <b>code</b> dans <b>Référence de paiement</b>\n"
     "3) Payez\n"
-    "4) Revenez ici → cliquez <b>J’ai déjà payé</b>\n"
+    "4) Revenez ici → cliquez <b>✅ J’ai déjà payé</b>\n"
     "5) Collez le même code → activation automatique (30 jours)\n\n"
-    "⚠️ Le code doit être <b>exactement</b> celui que vous avez utilisé."
+    "⚠️ Le code doit être exactement le même."
 )
 
-UNKNOWN_TEXT = (
-    "🤖 Je n’ai pas reconnu.\n\n"
-    "➡️ Tapez <b>stat</b> pour le menu\n"
-    "ou utilisez /help."
+DESCRIPTION_TEXT = (
+    f"ℹ️ <b>{BOT_NAME}</b>\n\n"
+    "• Liste des matchs par ligue (boutons)\n"
+    "• Analyse grand public : % sur seuils fixes + événements OUI/NON\n"
+    "• 2–3 picks recommandés si fiabilité ≥ 85%\n"
+    "• Coupon du jour (publié par l’admin)\n"
+    "• Gestion du capital (mise conseillée)\n\n"
+    "ℹ️ Ces stats sont souvent utilisées sur OneSpot, mais peuvent servir sur d’autres sites aussi."
 )
 
 CAPITAL_RULES_TEXT = (
@@ -187,18 +214,8 @@ CAPITAL_RULES_TEXT = (
 CAPITAL_START_TEXT = (
     "💰 <b>Calcul de mise</b>\n\n"
     "1) Envoyez votre <b>capital total</b> (ex: 100000)\n"
-    "2) Puis envoyez le <b>code</b> (= nombre de matchs du coupon, ex: 2, 3, 5, 7)\n\n"
+    "2) Puis envoyez le <b>code</b> (= nombre de matchs du coupon : 2, 3, 5, 7)\n\n"
     "➡️ Envoyez maintenant votre <b>capital</b>."
-)
-
-ANALYSE_HELP_TEXT = (
-    "🔎 <b>Analyse</b>\n\n"
-    "1) Allez sur <b>📅 Matchs</b>\n"
-    "2) Copiez l’<b>ID</b> du match\n"
-    "3) Envoyez : <code>/analyse ID</code>\n\n"
-    "Exemple : <code>/analyse 123456</code>\n\n"
-    "ℹ️ Les statistiques sont souvent utilisées sur OneSpot, "
-    "mais elles peuvent servir pour analyser sur d’autres sites aussi."
 )
 
 # =============================
@@ -208,7 +225,6 @@ def now_paris() -> dt.datetime:
     return dt.datetime.now(dt.UTC) + dt.timedelta(hours=PARIS_TZ_HOURS)
 
 def season_from_date(d: dt.date) -> int:
-    # Football seasons typically start around Aug
     return d.year if d.month >= 8 else d.year - 1
 
 def parse_date_text(text: str) -> Optional[dt.date]:
@@ -252,6 +268,11 @@ def chunk_lines(lines: List[str], max_chars: int = 3500) -> List[str]:
 
 def escape(s: str) -> str:
     return html.escape(s or "")
+
+def week_key_utc() -> str:
+    d = dt.datetime.utcnow().date()
+    iso_year, iso_week, _ = d.isocalendar()
+    return f"{iso_year}-W{iso_week:02d}"
 
 # =============================
 # DB
@@ -297,6 +318,14 @@ def init_db():
         )
         """)
         con.execute("""
+        CREATE TABLE IF NOT EXISTS usage_week(
+            chat_id INTEGER NOT NULL,
+            week_key TEXT NOT NULL,
+            analyses_used INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(chat_id, week_key)
+        )
+        """)
+        con.execute("""
         CREATE TABLE IF NOT EXISTS coupon_day(
             day TEXT PRIMARY KEY,
             coupon_code TEXT NOT NULL,
@@ -305,7 +334,6 @@ def init_db():
             created_at TEXT NOT NULL
         )
         """)
-        # admin: log activations (optional but useful)
         con.execute("""
         CREATE TABLE IF NOT EXISTS subscription_log(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -404,21 +432,49 @@ def mark_coupon_used(chat_id: int):
         ON CONFLICT(chat_id, day) DO UPDATE SET coupons_used=coupons_used+1
         """, (chat_id, today))
 
-def can_analyze(chat_id: int, plan: str) -> Tuple[bool, Optional[str]]:
+def can_analyze(chat_id: int, plan: Optional[str]) -> Tuple[bool, Optional[str], str]:
+    """
+    Retour:
+      ok, message, tier
+      tier in {"free","standard","vip","vvip","admin"}
+    """
     if plan in ("VVIP", "ADMIN"):
-        return True, None
+        return True, None, "vvip"
 
+    # FREE (pas d'abonnement)
+    if not plan:
+        wkey = week_key_utc()
+        with db() as con:
+            row = con.execute(
+                "SELECT analyses_used FROM usage_week WHERE chat_id=? AND week_key=?",
+                (chat_id, wkey),
+            ).fetchone()
+            used = int(row[0]) if row else 0
+        if used >= FREE_ANALYSES_PER_WEEK:
+            return False, f"Limite FREE atteinte ({used}/{FREE_ANALYSES_PER_WEEK}) cette semaine.", "free"
+        return True, None, "free"
+
+    # STANDARD / VIP
     month = now_paris().strftime("%Y-%m")
     with db() as con:
         row = con.execute("SELECT analyses_used FROM usage_month WHERE chat_id=? AND month=?", (chat_id, month)).fetchone()
-        used = row[0] if row else 0
+        used = int(row[0]) if row else 0
 
     limit = VIP_ANALYSES_PER_MONTH if plan == "VIP" else STANDARD_ANALYSES_PER_MONTH
     if used >= limit:
-        return False, f"Limite analyses atteinte ({used}/{limit}) pour ce mois."
-    return True, None
+        return False, f"Limite analyses atteinte ({used}/{limit}) pour ce mois.", plan.lower()
+    return True, None, plan.lower()
 
-def mark_analyze_used(chat_id: int):
+def mark_analyze_used(chat_id: int, tier: str):
+    if tier == "free":
+        wkey = week_key_utc()
+        with db() as con:
+            con.execute("""
+            INSERT INTO usage_week(chat_id, week_key, analyses_used) VALUES(?,?,1)
+            ON CONFLICT(chat_id, week_key) DO UPDATE SET analyses_used=analyses_used+1
+            """, (chat_id, wkey))
+        return
+
     month = now_paris().strftime("%Y-%m")
     with db() as con:
         con.execute("""
@@ -435,6 +491,15 @@ async def send_typing(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     except Exception:
         pass
 
+def reset_pending_flows(context: ContextTypes.DEFAULT_TYPE):
+    # Fix: éviter que le bot reste bloqué dans "paiement" ou "capital"
+    context.user_data.pop("awaiting_ref_plan", None)
+    context.user_data.pop("expected_pay_code", None)
+    context.user_data.pop("expected_pay_plan", None)
+    context.user_data.pop("awaiting_capital_amount", None)
+    context.user_data.pop("awaiting_capital_code", None)
+    context.user_data.pop("capital_amount", None)
+
 # =============================
 # API-FOOTBALL wrapper
 # =============================
@@ -446,41 +511,6 @@ async def apifootball_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
         r = await client.get(f"{APIFOOTBALL_BASE}{path}", headers=headers, params=params)
         r.raise_for_status()
         return r.json()
-
-# =============================
-# League cache for dynamic leagues
-# =============================
-def load_league_cache() -> Dict[str, int]:
-    try:
-        if os.path.exists(LEAGUE_CACHE_FILE):
-            with open(LEAGUE_CACHE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return {k: int(v) for k, v in data.items()}
-    except Exception:
-        pass
-    return {}
-
-def save_league_cache(cache: Dict[str, int]) -> None:
-    try:
-        with open(LEAGUE_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-async def resolve_league_id_dynamic(label: str, country: str, name: str, cache: Dict[str, int]) -> Optional[int]:
-    if label in cache:
-        return cache[label]
-    data = await apifootball_get("/leagues", {"country": country, "name": name})
-    resp = data.get("response", [])
-    for item in resp:
-        league = item.get("league") or {}
-        lid = league.get("id")
-        if isinstance(lid, int):
-            cache[label] = lid
-            save_league_cache(cache)
-            return lid
-    return None
 
 # =============================
 # FedaPay verification
@@ -515,10 +545,10 @@ async def fedapay_is_paid_by_reference(ref: str) -> Tuple[bool, str]:
 # =============================
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     kb = [
-        [KeyboardButton("📅 Matchs"), KeyboardButton("🔎 Analyse")],
-        [KeyboardButton("🎟️ Coupon du jour"), KeyboardButton("💳 Abonnement")],
-        [KeyboardButton("💰 Capital"), KeyboardButton("✅ Statut")],
-        [KeyboardButton("❓ Aide"), KeyboardButton("ℹ️ Description")],
+        [KeyboardButton("📅 Matchs"), KeyboardButton("🎟️ Coupon du jour")],
+        [KeyboardButton("💳 Abonnement"), KeyboardButton("💰 Capital")],
+        [KeyboardButton("✅ Statut"), KeyboardButton("❓ Aide")],
+        [KeyboardButton("ℹ️ Description")],
     ]
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
 
@@ -538,6 +568,19 @@ def capital_inline_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("⬅️ Menu", callback_data="CAP_BACK")],
     ]
     return InlineKeyboardMarkup(kb)
+
+def matches_date_inline_keyboard() -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton("📅 Aujourd’hui", callback_data="MDAY_TODAY"),
+         InlineKeyboardButton("📅 Demain", callback_data="MDAY_TOMORROW")],
+        [InlineKeyboardButton("📅 Après-demain", callback_data="MDAY_AFTER")],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+def analyze_inline_keyboard(fixture_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔎 Analyser", callback_data=f"ANALYZE_{fixture_id}")]
+    ])
 
 # =============================
 # Capital logic
@@ -560,29 +603,34 @@ def format_amount(x: float) -> str:
         return str(x)
 
 # =============================
-# ANALYSE: metrics + helpers
+# ANALYSE: métriques (seuils fixes demandés)
 # =============================
 # Mappings robustes pour éviter "indisponible"
 METRICS = [
     (["Corner Kicks"], "corners", "Corners"),
     (["Yellow Cards"], "yellow", "Cartons jaunes"),
-    (["Red Cards"], "red", "Cartons rouges"),
     (["Offsides"], "offsides", "Hors-jeu"),
-    (["Total Shots", "Shots Total"], "shots", "Tirs (total)"),
     (["Shots on Goal", "Shots on Target"], "shots_on_target", "Tirs cadrés"),
+    (["Total Shots", "Shots Total"], "shots", "Tirs (total)"),
     (["Fouls"], "fouls", "Fautes"),
-    (["Throw In", "Throw-ins"], "throwins", "Touches"),
-    (["Tackles"], "tackles", "Tacles"),
-    (["Dribbles"], "dribbles", "Dribbles"),
 ]
 
+# seuils FIXES (grand public)
+RANGES = [
+    ("Corners", "corners", 6, 11),
+    ("Cartons jaunes", "yellow", 2, 5),
+    ("Tirs cadrés", "shots_on_target", 6, 11),
+    ("Hors-jeu", "offsides", 2, 5),
+    ("Fautes", "fouls", 16, 27),
+    ("Tirs (total)", "shots", 18, 26),
+]
+
+# événements OUI/NON demandés
 EVENTS_LABELS = {
+    "goal_stoppage_time": "But en temps additionnel (1ère ou 2ème mi-temps)",
     "expulsion": "Expulsion (rouge / 2e jaune)",
-    "double": "Doublé",
-    "sub_scores": "Remplaçant marque",
-    "streak_3_goals_one_team": "3 buts d’affilée par une même équipe",
-    "goal_stoppage_time": "But en temps additionnel (mi-temps)",
-    "but_86_plus": "But 86’+",
+    "streak_3_goals_one_team": "3 buts d’affilée par une seule équipe",
+    "goal_88_plus": "But entre 88’ et fin du match",
 }
 
 def _as_int(v: Any) -> Optional[int]:
@@ -601,62 +649,15 @@ def _as_int(v: Any) -> Optional[int]:
             return None
     return None
 
-def avg(vals: List[int]) -> Optional[float]:
-    return (sum(vals) / len(vals)) if vals else None
-
 def prob_ge(vals: List[int], th: int) -> Optional[float]:
     if not vals:
         return None
-    n = len(vals)
-    return sum(1 for v in vals if v >= th) / n
+    return sum(1 for v in vals if v >= th) / len(vals)
 
 def prob_le(vals: List[int], th: int) -> Optional[float]:
     if not vals:
         return None
-    n = len(vals)
-    return sum(1 for v in vals if v <= th) / n
-
-def choose_best_threshold(vals: List[int]) -> Optional[Tuple[str, int, float]]:
-    """
-    Cherche un seuil "grand public" autour de la moyenne.
-    Retour: (mode, threshold, proba)
-    mode in {"over","under"}
-    """
-    if not vals:
-        return None
-    a = avg(vals)
-    if a is None:
-        return None
-    base = int(a + 0.999)
-
-    # Over candidates: base, base-1, base-2, base-3
-    over = []
-    for d in range(0, 4):
-        x = max(0, base - d)
-        p = prob_ge(vals, x)
-        if p is not None:
-            over.append(("over", x, p))
-
-    # Under candidates: base, base+1, base+2, base+3
-    under = []
-    for d in range(0, 4):
-        x = base + d
-        p = prob_le(vals, x)
-        if p is not None:
-            under.append(("under", x, p))
-
-    # Best by probability
-    best = None
-    for c in (over + under):
-        if best is None or c[2] > best[2]:
-            best = c
-    return best
-
-def format_pick_line(metric_label: str, mode: str, th: int, p: float) -> str:
-    pct = int(round(p * 100))
-    if mode == "over":
-        return f"• ✅ <b>{escape(metric_label)}</b> : <b>≥ {th}</b> — Fiabilité <b>{pct}%</b>"
-    return f"• ✅ <b>{escape(metric_label)}</b> : <b>≤ {th}</b> — Fiabilité <b>{pct}%</b>"
+    return sum(1 for v in vals if v <= th) / len(vals)
 
 def _is_red_card_event(ev: dict) -> bool:
     if (ev.get("type") or "") != "Card":
@@ -666,14 +667,13 @@ def _is_red_card_event(ev: dict) -> bool:
 
 def analyze_events_one_match(events: List[dict]) -> Dict[str, bool]:
     res = {
-        "but_86_plus": False,
-        "double": False,
-        "sub_scores": False,
         "expulsion": False,
         "streak_3_goals_one_team": False,
         "goal_stoppage_time": False,
+        "goal_88_plus": False,
     }
 
+    # expulsion
     for ev in events:
         if _is_red_card_event(ev):
             res["expulsion"] = True
@@ -681,35 +681,20 @@ def analyze_events_one_match(events: List[dict]) -> Dict[str, bool]:
 
     goals = [e for e in events if (e.get("type") == "Goal")]
 
-    # but 86+
+    # But 88+ (88->fin)
     for g in goals:
         minute = (g.get("time") or {}).get("elapsed")
-        if isinstance(minute, int) and minute >= 86:
-            res["but_86_plus"] = True
+        if isinstance(minute, int) and minute >= 88:
+            res["goal_88_plus"] = True
             break
 
-    # but en temps additionnel (mi-temps)
+    # But en temps additionnel (mi-temps): elapsed 45/90 et extra >=1
     for g in goals:
         tm = g.get("time") or {}
         elapsed = tm.get("elapsed")
         extra = tm.get("extra")
         if isinstance(extra, int) and extra >= 1 and elapsed in (45, 90):
             res["goal_stoppage_time"] = True
-            break
-
-    # doublé
-    scorer_count: Dict[str, int] = {}
-    for g in goals:
-        player = (g.get("player") or {}).get("name") or ""
-        if player:
-            scorer_count[player] = scorer_count.get(player, 0) + 1
-    res["double"] = any(v >= 2 for v in scorer_count.values())
-
-    # remplaçant marque
-    for g in goals:
-        det = (g.get("detail") or "").lower()
-        if "substitute" in det or "rempla" in det:
-            res["sub_scores"] = True
             break
 
     # 3 buts d'affilée par une équipe
@@ -725,18 +710,18 @@ def analyze_events_one_match(events: List[dict]) -> Dict[str, bool]:
 
     goals_sorted = sorted(goals, key=goal_sort_key)
     max_streak = 0
-    current_streak = 0
-    last_team_id = None
+    cur = 0
+    last_team = None
     for g in goals_sorted:
         team_id = (g.get("team") or {}).get("id")
         if team_id is None:
             continue
-        if team_id == last_team_id:
-            current_streak += 1
+        if team_id == last_team:
+            cur += 1
         else:
-            current_streak = 1
-            last_team_id = team_id
-        max_streak = max(max_streak, current_streak)
+            cur = 1
+            last_team = team_id
+        max_streak = max(max_streak, cur)
     res["streak_3_goals_one_team"] = (max_streak >= 3)
 
     return res
@@ -745,51 +730,46 @@ async def fixture_events(fid: int) -> List[dict]:
     data = await apifootball_get("/fixtures/events", {"fixture": fid})
     return data.get("response") or []
 
-async def fixture_stats(fid: int) -> Dict[str, Dict[str, Optional[int]]]:
+async def fixture_stats(fid: int) -> Dict[str, Optional[int]]:
+    """
+    Retourne TOTAL match pour chaque metric_key (corners, yellow, shots, shots_on_target, offsides, fouls).
+    """
     data = await apifootball_get("/fixtures/statistics", {"fixture": fid})
     resp = data.get("response") or []
     if len(resp) < 2:
-        return {"home": {}, "away": {}, "total": {}}
+        return {}
 
-    # map "type" to key
-    type_to_key = {}
+    # map type -> key
+    type_to_key: Dict[str, str] = {}
     for api_types, key, _label in METRICS:
         for t in api_types:
             type_to_key[t.lower()] = key
 
-    out = {"home": {}, "away": {}, "total": {}}
-    team_maps: List[Dict[str, Optional[int]]] = []
+    totals: Dict[str, int] = {key: 0 for _api_types, key, _label in METRICS}
+    seen_any: Dict[str, bool] = {key: False for _api_types, key, _label in METRICS}
 
     for entry in resp[:2]:
         stats = entry.get("statistics") or []
-        m = {key: None for _api_types, key, _label in METRICS}
         for it in stats:
             t = str(it.get("type") or "").lower()
             v = it.get("value")
             k = type_to_key.get(t)
-            if k:
-                m[k] = _as_int(v)
-        team_maps.append(m)
+            if not k:
+                continue
+            iv = _as_int(v)
+            if iv is None:
+                continue
+            totals[k] = totals.get(k, 0) + iv
+            seen_any[k] = True
 
-    home_m = team_maps[0]
-    away_m = team_maps[1]
-    out["home"] = home_m
-    out["away"] = away_m
-
-    for _api_types, key, _label in METRICS:
-        hv = home_m.get(key)
-        av = away_m.get(key)
-        if hv is None and av is None:
-            out["total"][key] = None
-        else:
-            out["total"][key] = (hv or 0) + (av or 0)
-
+    # garder seulement les clés réellement présentes
+    out: Dict[str, int] = {}
+    for k, ok in seen_any.items():
+        if ok:
+            out[k] = totals.get(k, 0)
     return out
 
 async def collect_numeric_samples(fxs: List[dict]) -> Dict[str, List[int]]:
-    """
-    Retourne dict: metric_key -> list of totals (par match).
-    """
     out: Dict[str, List[int]] = {key: [] for _api_types, key, _label in METRICS}
     sem = asyncio.Semaphore(ANALYSIS_CONCURRENCY)
 
@@ -798,9 +778,8 @@ async def collect_numeric_samples(fxs: List[dict]) -> Dict[str, List[int]]:
             try:
                 st = await fixture_stats(fid)
                 for _api_types, key, _label in METRICS:
-                    tv = st["total"].get(key)
-                    if isinstance(tv, int):
-                        out[key].append(tv)
+                    if key in st and isinstance(st[key], int):
+                        out[key].append(int(st[key]))
             except Exception:
                 pass
 
@@ -812,17 +791,12 @@ async def collect_numeric_samples(fxs: List[dict]) -> Dict[str, List[int]]:
 
     if tasks:
         await asyncio.gather(*tasks)
-
     return out
 
 async def collect_event_frequencies(fxs: List[dict], cap: int = 10) -> Tuple[Dict[str, float], int]:
-    """
-    Retourne (freq, n_used). cap limite les appels events.
-    """
     keys = list(EVENTS_LABELS.keys())
     counts = {k: 0 for k in keys}
     n = 0
-
     sem = asyncio.Semaphore(ANALYSIS_CONCURRENCY)
 
     async def one(fid: int):
@@ -851,7 +825,56 @@ async def collect_event_frequencies(fxs: List[dict], cap: int = 10) -> Tuple[Dic
         return ({k: 0.0 for k in keys}, 0)
     return ({k: counts[k] / n for k in keys}, n)
 
-async def run_analysis_for_fixture(chat_id: int, context: ContextTypes.DEFAULT_TYPE, fixture_id: int):
+def extract_goals_total_from_fixture(fx: dict) -> Optional[int]:
+    goals = fx.get("goals") or {}
+    h = goals.get("home")
+    a = goals.get("away")
+    ih = _as_int(h)
+    ia = _as_int(a)
+    if ih is None or ia is None:
+        return None
+    return ih + ia
+
+def prono_match_from_sample(sample: List[dict]) -> Optional[Tuple[str, float]]:
+    """
+    Donne UN prono (sans bookmaker) basé sur fréquences:
+    - Over 1.5
+    - BTTS Oui
+    - Under 3.5
+    Choisit celui avec la plus grosse proba.
+    """
+    totals: List[int] = []
+    btts_yes = 0
+    n = 0
+    for fx in sample:
+        goals = fx.get("goals") or {}
+        h = _as_int(goals.get("home"))
+        a = _as_int(goals.get("away"))
+        if h is None or a is None:
+            continue
+        n += 1
+        totals.append(h + a)
+        if h > 0 and a > 0:
+            btts_yes += 1
+    if n == 0:
+        return None
+
+    p_over15 = sum(1 for t in totals if t >= 2) / n
+    p_under35 = sum(1 for t in totals if t <= 3) / n
+    p_btts = btts_yes / n
+
+    candidates = [
+        ("Over 1.5 buts (tendance)", p_over15),
+        ("Under 3.5 buts (tendance)", p_under35),
+        ("BTTS = OUI (tendance)", p_btts),
+    ]
+    best = max(candidates, key=lambda x: x[1])
+    return best
+
+# =============================
+# ANALYSE principale (par fixture_id)
+# =============================
+async def run_analysis_for_fixture(chat_id: int, context: ContextTypes.DEFAULT_TYPE, fixture_id: int, update: Optional[Update] = None):
     await send_typing(context, chat_id)
     loading = await context.bot.send_message(chat_id=chat_id, text="⏳ Analyse en cours…")
 
@@ -899,45 +922,62 @@ async def run_analysis_for_fixture(chat_id: int, context: ContextTypes.DEFAULT_T
         # numeric stats
         numeric = await collect_numeric_samples(sample)
 
-        # best picks from metrics
-        picks: List[Tuple[float, str]] = []  # (p, line)
-        for api_types, key, label in METRICS:
+        # probabilities for fixed ranges
+        stats_lines: List[str] = []
+        candidate_picks: List[Tuple[float, str]] = []
+
+        for label, key, over_th, under_th in RANGES:
             vals = numeric.get(key, [])
             if not vals:
+                stats_lines.append(f"• {escape(label)} : <i>indisponible</i>")
                 continue
-            best = choose_best_threshold(vals)
-            if not best:
-                continue
-            mode, th, p = best
-            if p >= ANALYSIS_MIN_CONF:
-                picks.append((p, format_pick_line(label, mode, th, p)))
 
-        picks.sort(key=lambda x: x[0], reverse=True)
-        top_picks = picks[:ANALYSIS_MAX_PICKS]
+            p_over = prob_ge(vals, over_th) or 0.0
+            p_under = prob_le(vals, under_th) or 0.0
+            stats_lines.append(
+                f"• <b>{escape(label)}</b> : "
+                f"+{over_th} = <b>{int(round(p_over*100))}%</b> | "
+                f"-{under_th} = <b>{int(round(p_under*100))}%</b>"
+            )
+
+            # picks (une “face” peut être recommandée)
+            if p_over >= ANALYSIS_MIN_CONF:
+                candidate_picks.append((p_over, f"✅ <b>{escape(label)}</b> : <b>+{over_th}</b> — <b>{int(round(p_over*100))}%</b>"))
+            if p_under >= ANALYSIS_MIN_CONF:
+                candidate_picks.append((p_under, f"✅ <b>{escape(label)}</b> : <b>-{under_th}</b> — <b>{int(round(p_under*100))}%</b>"))
 
         # events yes/no
         ev_freq, ev_n = await collect_event_frequencies(sample, cap=10)
+
+        # prono match
+        pr = prono_match_from_sample(sample)
+
+        # top picks
+        candidate_picks.sort(key=lambda x: x[0], reverse=True)
+        top_picks = candidate_picks[:ANALYSIS_MAX_PICKS]
 
         lines: List[str] = []
         lines.append(f"⚽ <b>{escape(home_name)} vs {escape(away_name)}</b>")
         lines.append(f"🏆 <b>{escape(league)}</b>")
         lines.append(
-            f"🧪 Base : H2H <b>{len(h2h_list)}</b> + "
-            f"Récents <b>{escape(home_name)}</b> <b>{len(recent_h)}</b> + "
+            f"🧪 Base : H2H <b>{len(h2h_list)}</b> | "
+            f"Récents <b>{escape(home_name)}</b> <b>{len(recent_h)}</b> | "
             f"Récents <b>{escape(away_name)}</b> <b>{len(recent_a)}</b>"
         )
         lines.append("")
 
-        # Picks
-        lines.append(f"📌 <b>Picks fiables</b> (≥ {int(ANALYSIS_MIN_CONF*100)}%)")
-        if top_picks:
-            for _p, line in top_picks:
-                lines.append(line)
-        else:
-            lines.append("• ⚠️ Aucun pick assez fiable pour ce match (≥ 85%).")
+        lines.append("📊 <b>Statistiques clés (pourcentages)</b>")
+        lines.extend(stats_lines)
         lines.append("")
 
-        # Events
+        lines.append(f"✅ <b>Picks recommandés</b> (≥ {int(ANALYSIS_MIN_CONF*100)}%)")
+        if top_picks:
+            for _p, s in top_picks:
+                lines.append(f"• {s}")
+        else:
+            lines.append("• ⚠️ Aucun pick assez fiable (≥ 85%) sur cet échantillon.")
+        lines.append("")
+
         lines.append("🎯 <b>Événements (OUI / NON)</b>")
         lines.append(f"📌 Échantillon événements : <b>{ev_n}</b> match(s) (max 10)")
         for k, lbl in EVENTS_LABELS.items():
@@ -949,8 +989,17 @@ async def run_analysis_for_fixture(chat_id: int, context: ContextTypes.DEFAULT_T
                 f"NON <b>{int(round(p_no*100))}%</b>"
             )
         lines.append("")
-        lines.append("ℹ️ Ces stats sont souvent utilisées sur OneSpot, mais elles peuvent servir ailleurs aussi.")
-        lines.append(f"🔗 Canal (abonnés) : {escape(VIP_CHANNEL_LINK)}")
+
+        lines.append("🧠 <b>Prono match (tendance, sans bookmaker)</b>")
+        if pr:
+            label, p = pr
+            lines.append(f"• {escape(label)} : <b>{int(round(p*100))}%</b>")
+        else:
+            lines.append("• Indisponible (données buts insuffisantes).")
+        lines.append("")
+
+        lines.append("ℹ️ Ces stats sont souvent utilisées sur OneSpot, mais peuvent servir sur d’autres sites aussi.")
+        lines.append(f"🔗 Canal : {escape(VIP_CHANNEL_LINK)}")
 
         await loading.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
@@ -962,37 +1011,32 @@ async def run_analysis_for_fixture(chat_id: int, context: ContextTypes.DEFAULT_T
 # =============================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
+    reset_pending_flows(context)
     await update.message.reply_text(WELCOME_TEXT, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
 
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
+    reset_pending_flows(context)
     await update.message.reply_text("📌 <b>Menu</b> :", parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
+    reset_pending_flows(context)
     await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
 
 async def howpay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
+    reset_pending_flows(context)
     await update.message.reply_text(HOW_PAY_TEXT, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
 
 async def description_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
-    txt = (
-        f"ℹ️ <b>{BOT_NAME}</b>\n\n"
-        "• Liste des matchs par championnat et par date\n"
-        "• Analyse : 2 à 3 picks max (si fiables ≥ 85%)\n"
-        "• Coupon du jour (publié par l’admin)\n"
-        "• Gestion du capital (calcul de mise)\n"
-        "• Abonnements Standard / VIP / VVIP\n\n"
-        "📌 Tapez <b>stat</b> pour le menu."
-    )
-    await update.message.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
+    reset_pending_flows(context)
+    await update.message.reply_text(DESCRIPTION_TEXT, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
 
 async def capital_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
-    context.user_data.pop("awaiting_capital_amount", None)
-    context.user_data.pop("awaiting_capital_code", None)
+    reset_pending_flows(context)
     await update.message.reply_text(
         "💰 <b>Capital</b>\n\nChoisissez une option :",
         parse_mode=ParseMode.HTML,
@@ -1001,6 +1045,7 @@ async def capital_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
+    reset_pending_flows(context)
     chat_id = update.effective_chat.id
     if is_admin(update):
         await update.message.reply_text("👑 <b>ADMIN</b> : accès total.", parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
@@ -1008,7 +1053,12 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sub = get_sub(chat_id)
     if not sub:
-        await update.message.reply_text("❌ Aucun abonnement actif. Faites /abonnement.", parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
+        await update.message.reply_text(
+            f"📦 Statut : <b>FREE</b>\n"
+            f"🔎 Analyses FREE : <b>{FREE_ANALYSES_PER_WEEK}</b> / semaine",
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_keyboard(),
+        )
         return
 
     plan = sub["plan"]
@@ -1018,6 +1068,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def abonnement_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
+    reset_pending_flows(context)
     await update.message.reply_text(
         "💳 <b>Choisissez votre abonnement</b> :",
         parse_mode=ParseMode.HTML,
@@ -1025,41 +1076,39 @@ async def abonnement_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def matches_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Garde la commande /matches, mais on pousse surtout via boutons MDAY_*
+    """
     upsert_user(update)
+    reset_pending_flows(context)
     chat_id = update.effective_chat.id
     await send_typing(context, chat_id)
 
     arg = " ".join(context.args).strip() if context.args else ""
     d = parse_date_text(arg)
     if d is None:
-        await update.message.reply_text("❌ Date invalide. Ex: /matches demain | /matches 2026-03-01")
+        await update.message.reply_text("❌ Date invalide. Ex: /matches demain | /matches 2026-03-01", reply_markup=main_menu_keyboard())
         return
+    await send_matches_for_date(update, context, d)
 
+async def send_matches_for_date(update: Update, context: ContextTypes.DEFAULT_TYPE, d: dt.date):
+    chat_id = update.effective_chat.id
     date = d.isoformat()
     season = season_from_date(d)
 
     try:
-        cache = load_league_cache()
-        leagues_all: Dict[str, int] = dict(FOOT_LEAGUES_FIXED)
-        for it in FOOT_LEAGUES_DYNAMIC:
-            lid = await resolve_league_id_dynamic(it["label"], it["country"], it["name"], cache)
-            if isinstance(lid, int):
-                leagues_all[it["label"]] = lid
+        leagues_all = dict(FOOT_LEAGUES_FIXED)
 
-        lines = [
+        lines_header = [
             f"📅 <b>Matchs</b> : {escape(date)} (saison {season})",
-            f"⚽ <b>Football</b> | max {MATCHES_PER_LEAGUE_MAX}/compétition",
+            f"⚽ max {MATCHES_PER_LEAGUE_MAX}/compétition",
             "",
         ]
-
-        ordered_labels = list(FOOT_LEAGUES_FIXED.keys()) + [x["label"] for x in FOOT_LEAGUES_DYNAMIC]
+        await context.bot.send_message(chat_id=chat_id, text="\n".join(lines_header), parse_mode=ParseMode.HTML)
 
         any_found = False
-        for league_name in ordered_labels:
-            league_id = leagues_all.get(league_name)
-            if not league_id:
-                continue
-
+        # l'ordre dict conserve notre priorité (UEFA d'abord)
+        for league_name, league_id in leagues_all.items():
             data = await apifootball_get("/fixtures", {"date": date, "league": league_id, "season": season})
             fx_list = data.get("response", [])
             if not fx_list:
@@ -1068,41 +1117,41 @@ async def matches_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             fx_list = sorted(fx_list, key=kickoff_timestamp)[:MATCHES_PER_LEAGUE_MAX]
             any_found = True
 
-            lines.append(f"🏟️ <b>{escape(league_name)}</b>")
+            await context.bot.send_message(chat_id=chat_id, text=f"🏟️ <b>{escape(league_name)}</b>", parse_mode=ParseMode.HTML)
+
             for fx in fx_list:
                 f = fx.get("fixture", {}) or {}
                 teams = fx.get("teams", {}) or {}
                 home = str((teams.get("home", {}) or {}).get("name", "?"))
                 away = str((teams.get("away", {}) or {}).get("name", "?"))
-                fid = str(f.get("id", "?"))
+                fid = f.get("id")
                 hhmm = kickoff_hhmm(fx)
-                lines.append(f"• <b>{escape(hhmm)}</b> — {escape(home)} vs {escape(away)} — <code>{escape(fid)}</code>")
-            lines.append("")
+
+                text = f"• <b>{escape(hhmm)}</b> — {escape(home)} vs {escape(away)}"
+                if isinstance(fid, int):
+                    text += f"\n🆔 <code>{fid}</code>"
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=analyze_inline_keyboard(int(fid)) if isinstance(fid, int) else None
+                )
 
         if not any_found:
-            lines.append("Aucun match trouvé pour ces compétitions à cette date.")
-
-        for part in chunk_lines(lines):
-            await update.message.reply_text(part, parse_mode=ParseMode.HTML)
-
-        await update.message.reply_text(
-            "🔎 Pour analyser un match : copiez son ID puis envoyez :\n"
-            "<code>/analyse ID</code>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=main_menu_keyboard(),
-        )
+            await context.bot.send_message(chat_id=chat_id, text="Aucun match trouvé à cette date.", parse_mode=ParseMode.HTML)
 
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Erreur matches : {escape(str(e))}")
+        await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Erreur matches : {escape(str(e))}", parse_mode=ParseMode.HTML)
 
 async def coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
+    reset_pending_flows(context)
     chat_id = update.effective_chat.id
 
     sub = get_sub(chat_id)
     plan = "ADMIN" if is_admin(update) else (sub["plan"] if sub else None)
     if not plan:
-        await update.message.reply_text("🔒 Coupon réservé aux abonnés. Faites /abonnement.", parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
+        await update.message.reply_text("🔒 Coupon réservé aux abonnés. Faites <b>💳 Abonnement</b>.", parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
         return
 
     ok, msg = can_get_coupon(chat_id, plan)
@@ -1128,47 +1177,6 @@ async def coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔗 Canal : {escape(VIP_CHANNEL_LINK)}"
     )
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
-
-async def analyse_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    upsert_user(update)
-    chat_id = update.effective_chat.id
-
-    # Access control
-    if not is_admin(update):
-        sub = get_sub(chat_id)
-        plan = sub["plan"] if sub else None
-        if not plan:
-            await update.message.reply_text(
-                "🔒 Analyse réservée aux abonnés.\n➡️ Faites /abonnement",
-                parse_mode=ParseMode.HTML,
-                reply_markup=main_menu_keyboard()
-            )
-            return
-        ok, msg = can_analyze(chat_id, plan)
-        if not ok:
-            await update.message.reply_text(
-                f"⛔ {escape(msg)}\n\n➡️ Renouvelez/upgrade votre plan via /abonnement",
-                parse_mode=ParseMode.HTML,
-                reply_markup=main_menu_keyboard()
-            )
-            return
-
-    if not context.args:
-        await update.message.reply_text(ANALYSE_HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
-        return
-
-    fid_str = context.args[0].strip()
-    if not fid_str.isdigit():
-        await update.message.reply_text("❌ ID invalide. Exemple : <code>/analyse 123456</code>", parse_mode=ParseMode.HTML)
-        return
-
-    fid = int(fid_str)
-
-    # count usage (only for non-admin)
-    if not is_admin(update):
-        mark_analyze_used(chat_id)
-
-    await run_analysis_for_fixture(chat_id, context, fid)
 
 # =============================
 # Admin: publish coupon
@@ -1218,7 +1226,7 @@ async def publier_coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try:
             await context.bot.send_message(
                 chat_id=cid,
-                text="📌 <b>Coupon du jour disponible ✅</b>\n➡️ Faites /coupon",
+                text="📌 <b>Coupon du jour disponible ✅</b>\n➡️ Cliquez sur <b>🎟️ Coupon du jour</b>",
                 parse_mode=ParseMode.HTML
             )
             sent += 1
@@ -1239,6 +1247,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = dt.datetime.now(dt.UTC)
     today = now_paris().date().isoformat()
     month = now_paris().strftime("%Y-%m")
+    wkey = week_key_utc()
 
     with db() as con:
         total_users = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -1254,6 +1263,10 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "SELECT COALESCE(SUM(analyses_used),0) FROM usage_month WHERE month=?",
             (month,)
         ).fetchone()[0]
+        analyses_free_week = con.execute(
+            "SELECT COALESCE(SUM(analyses_used),0) FROM usage_week WHERE week_key=?",
+            (wkey,)
+        ).fetchone()[0]
         last_activations = con.execute(
             "SELECT chat_id, plan, reference, created_at FROM subscription_log ORDER BY id DESC LIMIT 5"
         ).fetchall()
@@ -1263,7 +1276,8 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append(f"👥 Utilisateurs : <b>{total_users}</b>")
     lines.append(f"💳 Abonnés actifs : <b>{active_subs}</b>")
     lines.append(f"🎟 Coupons consultés aujourd’hui : <b>{coupons_views_today}</b>")
-    lines.append(f"🔎 Analyses ce mois : <b>{analyses_month}</b>")
+    lines.append(f"🔎 Analyses (abonnés) ce mois : <b>{analyses_month}</b>")
+    lines.append(f"🔎 Analyses FREE cette semaine : <b>{analyses_free_week}</b>")
     lines.append("")
     lines.append("🕘 <b>5 dernières activations</b>")
     if last_activations:
@@ -1271,7 +1285,6 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"• {cid} — {escape(plan)} — {escape(ref or '-')}")
     else:
         lines.append("• (aucune)")
-
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 async def grant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1320,10 +1333,9 @@ async def grant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =============================
-# Callback handling (subscriptions + capital)
+# Callback handling (subscriptions + capital + matches + analyze)
 # =============================
 def make_payment_code(plan: str, chat_id: int) -> str:
-    # Code simple, lisible, et unique par jour
     stamp = now_paris().strftime("%Y%m%d")
     return f"{plan}-BOSCO-{chat_id}-{stamp}"
 
@@ -1336,8 +1348,66 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = q.data or ""
 
+    # ---- MATCH DATE buttons
+    if data in ("MDAY_TODAY", "MDAY_TOMORROW", "MDAY_AFTER"):
+        reset_pending_flows(context)
+        base = now_paris().date()
+        if data == "MDAY_TODAY":
+            d = base
+        elif data == "MDAY_TOMORROW":
+            d = base + dt.timedelta(days=1)
+        else:
+            d = base + dt.timedelta(days=2)
+
+        try:
+            await q.edit_message_text("⏳ Chargement des matchs…", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+        # envoie la liste
+        dummy_update = update  # même update
+        await send_matches_for_date(dummy_update, context, d)
+        return
+
+    # ---- ANALYZE button
+    if data.startswith("ANALYZE_"):
+        reset_pending_flows(context)
+        chat_id = update.effective_chat.id
+        fid_str = data.replace("ANALYZE_", "").strip()
+        if not fid_str.isdigit():
+            await context.bot.send_message(chat_id=chat_id, text="❌ ID match invalide.")
+            return
+        fid = int(fid_str)
+
+        # Access control
+        if is_admin(update):
+            ok = True
+            tier = "admin"
+        else:
+            sub = get_sub(chat_id)
+            plan = sub["plan"] if sub else None
+            ok, msg, tier = can_analyze(chat_id, plan)
+            if not ok:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"⛔ {escape(msg)}\n\n"
+                        "➡️ Pour plus d’analyses : <b>💳 Abonnement</b>"
+                    ),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=main_menu_keyboard(),
+                )
+                return
+
+        # consommer quota (FREE ou abonné)
+        if not is_admin(update):
+            mark_analyze_used(chat_id, tier)
+
+        await run_analysis_for_fixture(chat_id, context, fid, update=update)
+        return
+
     # ---- CAPITAL
     if data == "CAP_BACK":
+        reset_pending_flows(context)
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text="📌 <b>Menu</b> :",
@@ -1351,21 +1421,24 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "CAP_RULES":
+        reset_pending_flows(context)
         await q.edit_message_text(CAPITAL_RULES_TEXT, parse_mode=ParseMode.HTML, reply_markup=capital_inline_keyboard())
         return
 
     if data == "CAP_CALC":
+        reset_pending_flows(context)
         context.user_data["awaiting_capital_amount"] = True
-        context.user_data.pop("awaiting_capital_code", None)
         await q.edit_message_text(CAPITAL_START_TEXT, parse_mode=ParseMode.HTML, reply_markup=capital_inline_keyboard())
         return
 
     # ---- SUBSCRIPTIONS
     if data == "SUB_HELP":
+        reset_pending_flows(context)
         await q.edit_message_text(HOW_PAY_TEXT, parse_mode=ParseMode.HTML, reply_markup=subscription_inline_keyboard())
         return
 
     if data.startswith("SUB_"):
+        reset_pending_flows(context)
         plan = data.replace("SUB_", "").strip().upper()
         if plan not in ("STANDARD", "VIP", "VVIP"):
             await q.edit_message_text("❌ Plan invalide.")
@@ -1389,10 +1462,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "2) Sur FedaPay, collez le code ci-dessus dans <b>Référence de paiement</b>\n"
             "3) Payez\n"
             "4) Revenez ici → cliquez <b>✅ J’ai déjà payé</b>\n"
-            "5) Collez le même code\n\n"
-            "⚠️ Si la référence est différente, l’activation peut échouer."
+            "5) Collez le même code\n"
         )
-        # stock expected code (optional UX)
         context.user_data["expected_pay_code"] = pay_code
         context.user_data["expected_pay_plan"] = plan
 
@@ -1435,7 +1506,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_capital_code"] = True
 
         await update.message.reply_text(
-            "✅ Capital reçu.\n➡️ Envoyez maintenant le <b>code</b> (nombre de matchs du coupon : 2, 3, 5, 7...)",
+            "✅ Capital reçu.\n➡️ Envoyez maintenant le <b>code</b> (2, 3, 5, 7...)",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -1454,6 +1525,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pct = capital_percent_for_code(code)
         stake = amount * pct
 
+        # reset capital flow
         context.user_data.pop("awaiting_capital_code", None)
         context.user_data.pop("capital_amount", None)
 
@@ -1463,7 +1535,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔢 Code : <b>{code}</b> match(s)\n"
             f"📊 Pourcentage : <b>{int(pct*100)}%</b>\n"
             f"🎯 Mise conseillée : <b>{escape(format_amount(stake))}</b>\n\n"
-            "📌 Pour recommencer : /capital",
+            "📌 Pour recommencer : cliquez <b>💰 Capital</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=main_menu_keyboard(),
         )
@@ -1482,7 +1554,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await tmp.edit_text(
                     "❌ Paiement non confirmé.\n\n"
                     f"📌 Détail : {escape(detail)}\n\n"
-                    "Vérifiez la référence et réessayez.",
+                    "➡️ Vérifiez la référence et réessayez.\n"
+                    "💡 Astuce : revenez sur <b>💳 Abonnement</b> pour récupérer le code.",
                     parse_mode=ParseMode.HTML
                 )
                 return
@@ -1508,38 +1581,46 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     low = msg.lower()
 
     if low == "stat":
+        reset_pending_flows(context)
         await update.message.reply_text("📌 <b>Menu</b> :", parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
         return
 
     if msg == "📅 Matchs":
-        await update.message.reply_text("📅 Choisissez : /matches | /matches demain | /matches AAAA-MM-JJ", reply_markup=main_menu_keyboard())
-        return
-
-    if msg == "🔎 Analyse":
-        await update.message.reply_text(ANALYSE_HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
+        reset_pending_flows(context)
+        await update.message.reply_text(
+            "📅 <b>Choisissez une date</b> :",
+            parse_mode=ParseMode.HTML,
+            reply_markup=matches_date_inline_keyboard(),
+        )
         return
 
     if msg == "🎟️ Coupon du jour":
+        reset_pending_flows(context)
         await coupon_cmd(update, context)
         return
 
     if msg == "💳 Abonnement":
+        reset_pending_flows(context)
         await abonnement_cmd(update, context)
         return
 
     if msg == "💰 Capital":
+        reset_pending_flows(context)
         await capital_cmd(update, context)
         return
 
     if msg == "✅ Statut":
+        reset_pending_flows(context)
         await status_cmd(update, context)
         return
 
     if msg == "❓ Aide":
+        reset_pending_flows(context)
         await help_cmd(update, context)
         return
 
     if msg == "ℹ️ Description":
+        reset_pending_flows(context)
         await description_cmd(update, context)
         return
 
@@ -1567,8 +1648,6 @@ def main():
     app.add_handler(CommandHandler("description", description_cmd))
     app.add_handler(CommandHandler("matches", matches_cmd))
     app.add_handler(CommandHandler("coupon", coupon_cmd))
-    app.add_handler(CommandHandler("analyse", analyse_cmd))
-    app.add_handler(CommandHandler("analyze", analyse_cmd))  # alias
 
     # admin
     app.add_handler(CommandHandler("publier_coupon", publier_coupon_cmd))
