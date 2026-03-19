@@ -4,6 +4,7 @@ import json
 import html
 import sqlite3
 import datetime as dt
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote as urlquote
 
@@ -85,10 +86,20 @@ PAY_LINKS = {
 # How many matches to show per league
 MATCHES_PER_LEAGUE_MAX = int(os.getenv("MATCHES_PER_LEAGUE_MAX", "10"))
 
+# Analyse: fiabilité minimale
+ANALYSIS_MIN_CONF = float(os.getenv("ANALYSIS_MIN_CONF", "0.85"))  # 85%
+ANALYSIS_MAX_PICKS = int(os.getenv("ANALYSIS_MAX_PICKS", "3"))     # 2-3 picks max (par défaut 3)
+ANALYSIS_MAX_H2H = int(os.getenv("ANALYSIS_MAX_H2H", "10"))
+ANALYSIS_MAX_RECENT = int(os.getenv("ANALYSIS_MAX_RECENT", "10"))
+ANALYSIS_MIN_H2H = int(os.getenv("ANALYSIS_MIN_H2H", "3"))
+ANALYSIS_MIN_RECENT = int(os.getenv("ANALYSIS_MIN_RECENT", "3"))
+
+# Concurrency limit (API calls)
+ANALYSIS_CONCURRENCY = int(os.getenv("ANALYSIS_CONCURRENCY", "5"))
+
 # =============================
 # FOOTBALL LEAGUES (IDs via API-FOOTBALL)
 # =============================
-# ✅ Mise à jour : LDC / Europa League / Conference League inclus
 FOOT_LEAGUES_FIXED: Dict[str, int] = {
     "Premier League (Angleterre)": 39,
     "LaLiga (Espagne)": 140,
@@ -119,10 +130,11 @@ WELCOME_TEXT = (
     f"👋 <b>Bienvenue sur {BOT_NAME}</b> ⚽📊\n\n"
     "Je vous aide à :\n"
     "✅ Voir les matchs (par date)\n"
+    "✅ Lancer une <b>analyse</b> simple et fiable\n"
     "✅ Consulter le <b>coupon du jour</b>\n"
     "✅ Gérer votre <b>capital</b> (calcul automatique)\n"
     "✅ Accéder aux fonctionnalités selon votre abonnement\n\n"
-    "📌 Tapez <b>stat</b> ou cliquez sur <b>Menu</b>."
+    "📌 Tapez <b>stat</b> ou utilisez le menu en bas."
 )
 
 HELP_TEXT = (
@@ -132,6 +144,9 @@ HELP_TEXT = (
     "• /matches demain\n"
     "• /matches apres-demain\n"
     "• /matches AAAA-MM-JJ\n\n"
+    "🔎 <b>Analyse</b>\n"
+    "• /analyse &lt;ID_MATCH&gt;\n"
+    "   Exemple : <code>/analyse 123456</code>\n\n"
     "🎟️ <b>Coupon</b>\n"
     "• /coupon\n\n"
     "💳 <b>Abonnement</b>\n"
@@ -145,12 +160,11 @@ HELP_TEXT = (
 HOW_PAY_TEXT = (
     "💳 <b>Comment activer l’abonnement</b>\n\n"
     "1) Cliquez sur un plan (Standard / VIP / VVIP)\n"
-    "2) Sur la page FedaPay, mettez votre code dans <b>Référence de paiement</b>\n"
-    "   (ex: <code>VIP-BOSCO-1234</code>)\n"
+    "2) Sur la page FedaPay, mettez le <b>code</b> dans <b>Référence de paiement</b>\n"
     "3) Payez\n"
     "4) Revenez ici → cliquez <b>J’ai déjà payé</b>\n"
-    "5) Envoyez le même code → activation automatique (30 jours)\n\n"
-    "⚠️ Le code doit être <b>exactement</b> celui utilisé dans la référence."
+    "5) Collez le même code → activation automatique (30 jours)\n\n"
+    "⚠️ Le code doit être <b>exactement</b> celui que vous avez utilisé."
 )
 
 UNKNOWN_TEXT = (
@@ -175,6 +189,16 @@ CAPITAL_START_TEXT = (
     "1) Envoyez votre <b>capital total</b> (ex: 100000)\n"
     "2) Puis envoyez le <b>code</b> (= nombre de matchs du coupon, ex: 2, 3, 5, 7)\n\n"
     "➡️ Envoyez maintenant votre <b>capital</b>."
+)
+
+ANALYSE_HELP_TEXT = (
+    "🔎 <b>Analyse</b>\n\n"
+    "1) Allez sur <b>📅 Matchs</b>\n"
+    "2) Copiez l’<b>ID</b> du match\n"
+    "3) Envoyez : <code>/analyse ID</code>\n\n"
+    "Exemple : <code>/analyse 123456</code>\n\n"
+    "ℹ️ Les statistiques sont souvent utilisées sur OneSpot, "
+    "mais elles peuvent servir pour analyser sur d’autres sites aussi."
 )
 
 # =============================
@@ -225,6 +249,9 @@ def chunk_lines(lines: List[str], max_chars: int = 3500) -> List[str]:
     if buf:
         out.append(buf)
     return out
+
+def escape(s: str) -> str:
+    return html.escape(s or "")
 
 # =============================
 # DB
@@ -278,6 +305,16 @@ def init_db():
             created_at TEXT NOT NULL
         )
         """)
+        # admin: log activations (optional but useful)
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS subscription_log(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            plan TEXT NOT NULL,
+            reference TEXT,
+            created_at TEXT NOT NULL
+        )
+        """)
 
 def upsert_user(update: Update):
     if not update.effective_chat:
@@ -292,7 +329,8 @@ def upsert_user(update: Update):
             user_id=excluded.user_id,
             username=excluded.username,
             first_name=excluded.first_name,
-            last_name=excluded.last_name
+            last_name=excluded.last_name,
+            created_at=excluded.created_at
         """, (
             chat_id,
             (u.id if u else None),
@@ -301,6 +339,16 @@ def upsert_user(update: Update):
             (u.last_name if u else None),
             now_paris().isoformat(),
         ))
+
+def find_chat_id_by_username(username: str) -> Optional[int]:
+    u = (username or "").strip()
+    if u.startswith("@"):
+        u = u[1:]
+    if not u:
+        return None
+    with db() as con:
+        row = con.execute("SELECT chat_id FROM users WHERE lower(username)=lower(?)", (u,)).fetchone()
+    return int(row[0]) if row else None
 
 # =============================
 # Subscription / Access
@@ -320,14 +368,18 @@ def get_sub(chat_id: int) -> Optional[Dict[str, Any]]:
         return None
     return {"plan": plan, "expires_at": exp}
 
-def set_sub(chat_id: int, plan: str) -> dt.datetime:
-    exp = dt.datetime.now(dt.UTC) + dt.timedelta(days=SUB_DURATION_DAYS)
+def set_sub(chat_id: int, plan: str, reference: Optional[str] = None, days: int = SUB_DURATION_DAYS) -> dt.datetime:
+    exp = dt.datetime.now(dt.UTC) + dt.timedelta(days=int(days))
     with db() as con:
         con.execute("""
         INSERT INTO subscriptions(chat_id, plan, expires_at)
         VALUES(?,?,?)
         ON CONFLICT(chat_id) DO UPDATE SET plan=excluded.plan, expires_at=excluded.expires_at
         """, (chat_id, plan, exp.isoformat()))
+        con.execute(
+            "INSERT INTO subscription_log(chat_id, plan, reference, created_at) VALUES(?,?,?,?)",
+            (chat_id, plan, reference, now_paris().isoformat()),
+        )
     return exp
 
 def can_get_coupon(chat_id: int, plan: str) -> Tuple[bool, Optional[str]]:
@@ -463,8 +515,9 @@ async def fedapay_is_paid_by_reference(ref: str) -> Tuple[bool, str]:
 # =============================
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     kb = [
-        [KeyboardButton("📅 Matchs"), KeyboardButton("🎟️ Coupon du jour")],
-        [KeyboardButton("💳 Abonnement"), KeyboardButton("💰 Capital")],
+        [KeyboardButton("📅 Matchs"), KeyboardButton("🔎 Analyse")],
+        [KeyboardButton("🎟️ Coupon du jour"), KeyboardButton("💳 Abonnement")],
+        [KeyboardButton("💰 Capital"), KeyboardButton("✅ Statut")],
         [KeyboardButton("❓ Aide"), KeyboardButton("ℹ️ Description")],
     ]
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
@@ -490,7 +543,6 @@ def capital_inline_keyboard() -> InlineKeyboardMarkup:
 # Capital logic
 # =============================
 def capital_percent_for_code(code: int) -> float:
-    # Règles demandées
     if code == 2:
         return 0.15
     if code == 3:
@@ -499,8 +551,6 @@ def capital_percent_for_code(code: int) -> float:
         return 0.08
     if code >= 7:
         return 0.05
-    # fallback (si l'utilisateur met 4, 6, etc.)
-    # on applique 8% par défaut (le plus proche)
     return 0.08
 
 def format_amount(x: float) -> str:
@@ -508,6 +558,404 @@ def format_amount(x: float) -> str:
         return f"{int(round(x)):,}".replace(",", " ")
     except Exception:
         return str(x)
+
+# =============================
+# ANALYSE: metrics + helpers
+# =============================
+# Mappings robustes pour éviter "indisponible"
+METRICS = [
+    (["Corner Kicks"], "corners", "Corners"),
+    (["Yellow Cards"], "yellow", "Cartons jaunes"),
+    (["Red Cards"], "red", "Cartons rouges"),
+    (["Offsides"], "offsides", "Hors-jeu"),
+    (["Total Shots", "Shots Total"], "shots", "Tirs (total)"),
+    (["Shots on Goal", "Shots on Target"], "shots_on_target", "Tirs cadrés"),
+    (["Fouls"], "fouls", "Fautes"),
+    (["Throw In", "Throw-ins"], "throwins", "Touches"),
+    (["Tackles"], "tackles", "Tacles"),
+    (["Dribbles"], "dribbles", "Dribbles"),
+]
+
+EVENTS_LABELS = {
+    "expulsion": "Expulsion (rouge / 2e jaune)",
+    "double": "Doublé",
+    "sub_scores": "Remplaçant marque",
+    "streak_3_goals_one_team": "3 buts d’affilée par une même équipe",
+    "goal_stoppage_time": "But en temps additionnel (mi-temps)",
+    "but_86_plus": "But 86’+",
+}
+
+def _as_int(v: Any) -> Optional[int]:
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return int(v)
+    if isinstance(v, str):
+        s = v.strip()
+        m = re.search(r"-?\d+", s.replace("−", "-"))
+        if not m:
+            return None
+        try:
+            return int(m.group(0))
+        except Exception:
+            return None
+    return None
+
+def avg(vals: List[int]) -> Optional[float]:
+    return (sum(vals) / len(vals)) if vals else None
+
+def prob_ge(vals: List[int], th: int) -> Optional[float]:
+    if not vals:
+        return None
+    n = len(vals)
+    return sum(1 for v in vals if v >= th) / n
+
+def prob_le(vals: List[int], th: int) -> Optional[float]:
+    if not vals:
+        return None
+    n = len(vals)
+    return sum(1 for v in vals if v <= th) / n
+
+def choose_best_threshold(vals: List[int]) -> Optional[Tuple[str, int, float]]:
+    """
+    Cherche un seuil "grand public" autour de la moyenne.
+    Retour: (mode, threshold, proba)
+    mode in {"over","under"}
+    """
+    if not vals:
+        return None
+    a = avg(vals)
+    if a is None:
+        return None
+    base = int(a + 0.999)
+
+    # Over candidates: base, base-1, base-2, base-3
+    over = []
+    for d in range(0, 4):
+        x = max(0, base - d)
+        p = prob_ge(vals, x)
+        if p is not None:
+            over.append(("over", x, p))
+
+    # Under candidates: base, base+1, base+2, base+3
+    under = []
+    for d in range(0, 4):
+        x = base + d
+        p = prob_le(vals, x)
+        if p is not None:
+            under.append(("under", x, p))
+
+    # Best by probability
+    best = None
+    for c in (over + under):
+        if best is None or c[2] > best[2]:
+            best = c
+    return best
+
+def format_pick_line(metric_label: str, mode: str, th: int, p: float) -> str:
+    pct = int(round(p * 100))
+    if mode == "over":
+        return f"• ✅ <b>{escape(metric_label)}</b> : <b>≥ {th}</b> — Fiabilité <b>{pct}%</b>"
+    return f"• ✅ <b>{escape(metric_label)}</b> : <b>≤ {th}</b> — Fiabilité <b>{pct}%</b>"
+
+def _is_red_card_event(ev: dict) -> bool:
+    if (ev.get("type") or "") != "Card":
+        return False
+    detail = (ev.get("detail") or "").lower()
+    return ("red" in detail) or ("second yellow" in detail)
+
+def analyze_events_one_match(events: List[dict]) -> Dict[str, bool]:
+    res = {
+        "but_86_plus": False,
+        "double": False,
+        "sub_scores": False,
+        "expulsion": False,
+        "streak_3_goals_one_team": False,
+        "goal_stoppage_time": False,
+    }
+
+    for ev in events:
+        if _is_red_card_event(ev):
+            res["expulsion"] = True
+            break
+
+    goals = [e for e in events if (e.get("type") == "Goal")]
+
+    # but 86+
+    for g in goals:
+        minute = (g.get("time") or {}).get("elapsed")
+        if isinstance(minute, int) and minute >= 86:
+            res["but_86_plus"] = True
+            break
+
+    # but en temps additionnel (mi-temps)
+    for g in goals:
+        tm = g.get("time") or {}
+        elapsed = tm.get("elapsed")
+        extra = tm.get("extra")
+        if isinstance(extra, int) and extra >= 1 and elapsed in (45, 90):
+            res["goal_stoppage_time"] = True
+            break
+
+    # doublé
+    scorer_count: Dict[str, int] = {}
+    for g in goals:
+        player = (g.get("player") or {}).get("name") or ""
+        if player:
+            scorer_count[player] = scorer_count.get(player, 0) + 1
+    res["double"] = any(v >= 2 for v in scorer_count.values())
+
+    # remplaçant marque
+    for g in goals:
+        det = (g.get("detail") or "").lower()
+        if "substitute" in det or "rempla" in det:
+            res["sub_scores"] = True
+            break
+
+    # 3 buts d'affilée par une équipe
+    def goal_sort_key(e: dict):
+        tm = e.get("time") or {}
+        elapsed = tm.get("elapsed")
+        extra = tm.get("extra") or 0
+        if not isinstance(elapsed, int):
+            elapsed = 0
+        if not isinstance(extra, int):
+            extra = 0
+        return elapsed * 10 + extra
+
+    goals_sorted = sorted(goals, key=goal_sort_key)
+    max_streak = 0
+    current_streak = 0
+    last_team_id = None
+    for g in goals_sorted:
+        team_id = (g.get("team") or {}).get("id")
+        if team_id is None:
+            continue
+        if team_id == last_team_id:
+            current_streak += 1
+        else:
+            current_streak = 1
+            last_team_id = team_id
+        max_streak = max(max_streak, current_streak)
+    res["streak_3_goals_one_team"] = (max_streak >= 3)
+
+    return res
+
+async def fixture_events(fid: int) -> List[dict]:
+    data = await apifootball_get("/fixtures/events", {"fixture": fid})
+    return data.get("response") or []
+
+async def fixture_stats(fid: int) -> Dict[str, Dict[str, Optional[int]]]:
+    data = await apifootball_get("/fixtures/statistics", {"fixture": fid})
+    resp = data.get("response") or []
+    if len(resp) < 2:
+        return {"home": {}, "away": {}, "total": {}}
+
+    # map "type" to key
+    type_to_key = {}
+    for api_types, key, _label in METRICS:
+        for t in api_types:
+            type_to_key[t.lower()] = key
+
+    out = {"home": {}, "away": {}, "total": {}}
+    team_maps: List[Dict[str, Optional[int]]] = []
+
+    for entry in resp[:2]:
+        stats = entry.get("statistics") or []
+        m = {key: None for _api_types, key, _label in METRICS}
+        for it in stats:
+            t = str(it.get("type") or "").lower()
+            v = it.get("value")
+            k = type_to_key.get(t)
+            if k:
+                m[k] = _as_int(v)
+        team_maps.append(m)
+
+    home_m = team_maps[0]
+    away_m = team_maps[1]
+    out["home"] = home_m
+    out["away"] = away_m
+
+    for _api_types, key, _label in METRICS:
+        hv = home_m.get(key)
+        av = away_m.get(key)
+        if hv is None and av is None:
+            out["total"][key] = None
+        else:
+            out["total"][key] = (hv or 0) + (av or 0)
+
+    return out
+
+async def collect_numeric_samples(fxs: List[dict]) -> Dict[str, List[int]]:
+    """
+    Retourne dict: metric_key -> list of totals (par match).
+    """
+    out: Dict[str, List[int]] = {key: [] for _api_types, key, _label in METRICS}
+    sem = asyncio.Semaphore(ANALYSIS_CONCURRENCY)
+
+    async def one(fid: int):
+        async with sem:
+            try:
+                st = await fixture_stats(fid)
+                for _api_types, key, _label in METRICS:
+                    tv = st["total"].get(key)
+                    if isinstance(tv, int):
+                        out[key].append(tv)
+            except Exception:
+                pass
+
+    tasks = []
+    for fx in fxs:
+        fid = ((fx.get("fixture") or {}).get("id"))
+        if isinstance(fid, int):
+            tasks.append(asyncio.create_task(one(fid)))
+
+    if tasks:
+        await asyncio.gather(*tasks)
+
+    return out
+
+async def collect_event_frequencies(fxs: List[dict], cap: int = 10) -> Tuple[Dict[str, float], int]:
+    """
+    Retourne (freq, n_used). cap limite les appels events.
+    """
+    keys = list(EVENTS_LABELS.keys())
+    counts = {k: 0 for k in keys}
+    n = 0
+
+    sem = asyncio.Semaphore(ANALYSIS_CONCURRENCY)
+
+    async def one(fid: int):
+        nonlocal n
+        async with sem:
+            try:
+                evs = await fixture_events(fid)
+                flags = analyze_events_one_match(evs)
+                for k in keys:
+                    if flags.get(k):
+                        counts[k] += 1
+                n += 1
+            except Exception:
+                pass
+
+    tasks = []
+    for fx in fxs[:cap]:
+        fid = ((fx.get("fixture") or {}).get("id"))
+        if isinstance(fid, int):
+            tasks.append(asyncio.create_task(one(fid)))
+
+    if tasks:
+        await asyncio.gather(*tasks)
+
+    if n == 0:
+        return ({k: 0.0 for k in keys}, 0)
+    return ({k: counts[k] / n for k in keys}, n)
+
+async def run_analysis_for_fixture(chat_id: int, context: ContextTypes.DEFAULT_TYPE, fixture_id: int):
+    await send_typing(context, chat_id)
+    loading = await context.bot.send_message(chat_id=chat_id, text="⏳ Analyse en cours…")
+
+    try:
+        fx = await apifootball_get("/fixtures", {"id": fixture_id})
+        resp = fx.get("response") or []
+        if not resp:
+            await loading.edit_text("❌ Match introuvable.")
+            return
+
+        fx0 = resp[0]
+        teams = fx0.get("teams") or {}
+        home = teams.get("home") or {}
+        away = teams.get("away") or {}
+        home_id, away_id = home.get("id"), away.get("id")
+        home_name = home.get("name") or "Home"
+        away_name = away.get("name") or "Away"
+        league = (fx0.get("league") or {}).get("name") or "Compétition"
+
+        if not (isinstance(home_id, int) and isinstance(away_id, int)):
+            await loading.edit_text("❌ Données équipes manquantes.")
+            return
+
+        # H2H + recents
+        h2h = await apifootball_get("/fixtures/headtohead", {"h2h": f"{home_id}-{away_id}", "last": ANALYSIS_MAX_H2H})
+        h2h_list = (h2h.get("response") or [])[:ANALYSIS_MAX_H2H]
+
+        recent_home = await apifootball_get("/fixtures", {"team": home_id, "last": ANALYSIS_MAX_RECENT, "status": "FT"})
+        recent_away = await apifootball_get("/fixtures", {"team": away_id, "last": ANALYSIS_MAX_RECENT, "status": "FT"})
+        recent_h = (recent_home.get("response") or [])[:ANALYSIS_MAX_RECENT]
+        recent_a = (recent_away.get("response") or [])[:ANALYSIS_MAX_RECENT]
+
+        if len(h2h_list) < ANALYSIS_MIN_H2H or len(recent_h) < ANALYSIS_MIN_RECENT or len(recent_a) < ANALYSIS_MIN_RECENT:
+            await loading.edit_text(
+                "⚠️ <b>Analyse impossible</b> (échantillon insuffisant)\n\n"
+                f"• H2H : <b>{len(h2h_list)}</b> (min {ANALYSIS_MIN_H2H})\n"
+                f"• Récents {escape(home_name)} : <b>{len(recent_h)}</b> (min {ANALYSIS_MIN_RECENT})\n"
+                f"• Récents {escape(away_name)} : <b>{len(recent_a)}</b> (min {ANALYSIS_MIN_RECENT})\n",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        sample = h2h_list + recent_h + recent_a
+
+        # numeric stats
+        numeric = await collect_numeric_samples(sample)
+
+        # best picks from metrics
+        picks: List[Tuple[float, str]] = []  # (p, line)
+        for api_types, key, label in METRICS:
+            vals = numeric.get(key, [])
+            if not vals:
+                continue
+            best = choose_best_threshold(vals)
+            if not best:
+                continue
+            mode, th, p = best
+            if p >= ANALYSIS_MIN_CONF:
+                picks.append((p, format_pick_line(label, mode, th, p)))
+
+        picks.sort(key=lambda x: x[0], reverse=True)
+        top_picks = picks[:ANALYSIS_MAX_PICKS]
+
+        # events yes/no
+        ev_freq, ev_n = await collect_event_frequencies(sample, cap=10)
+
+        lines: List[str] = []
+        lines.append(f"⚽ <b>{escape(home_name)} vs {escape(away_name)}</b>")
+        lines.append(f"🏆 <b>{escape(league)}</b>")
+        lines.append(
+            f"🧪 Base : H2H <b>{len(h2h_list)}</b> + "
+            f"Récents <b>{escape(home_name)}</b> <b>{len(recent_h)}</b> + "
+            f"Récents <b>{escape(away_name)}</b> <b>{len(recent_a)}</b>"
+        )
+        lines.append("")
+
+        # Picks
+        lines.append(f"📌 <b>Picks fiables</b> (≥ {int(ANALYSIS_MIN_CONF*100)}%)")
+        if top_picks:
+            for _p, line in top_picks:
+                lines.append(line)
+        else:
+            lines.append("• ⚠️ Aucun pick assez fiable pour ce match (≥ 85%).")
+        lines.append("")
+
+        # Events
+        lines.append("🎯 <b>Événements (OUI / NON)</b>")
+        lines.append(f"📌 Échantillon événements : <b>{ev_n}</b> match(s) (max 10)")
+        for k, lbl in EVENTS_LABELS.items():
+            p_yes = float(ev_freq.get(k, 0.0) or 0.0)
+            p_no = max(0.0, 1.0 - p_yes)
+            lines.append(
+                f"• {escape(lbl)} : "
+                f"OUI <b>{int(round(p_yes*100))}%</b> | "
+                f"NON <b>{int(round(p_no*100))}%</b>"
+            )
+        lines.append("")
+        lines.append("ℹ️ Ces stats sont souvent utilisées sur OneSpot, mais elles peuvent servir ailleurs aussi.")
+        lines.append(f"🔗 Canal (abonnés) : {escape(VIP_CHANNEL_LINK)}")
+
+        await loading.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        await loading.edit_text(f"⚠️ Erreur analyse : <code>{escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
 # =============================
 # Commands
@@ -533,6 +981,7 @@ async def description_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
         f"ℹ️ <b>{BOT_NAME}</b>\n\n"
         "• Liste des matchs par championnat et par date\n"
+        "• Analyse : 2 à 3 picks max (si fiables ≥ 85%)\n"
         "• Coupon du jour (publié par l’admin)\n"
         "• Gestion du capital (calcul de mise)\n"
         "• Abonnements Standard / VIP / VVIP\n\n"
@@ -542,7 +991,6 @@ async def description_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def capital_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
-    # Menu capital direct + fonctionnel
     context.user_data.pop("awaiting_capital_amount", None)
     context.user_data.pop("awaiting_capital_code", None)
     await update.message.reply_text(
@@ -555,22 +1003,18 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
     chat_id = update.effective_chat.id
     if is_admin(update):
-        await update.message.reply_text("👑 <b>ADMIN</b> : accès total.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("👑 <b>ADMIN</b> : accès total.", parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
         return
 
     sub = get_sub(chat_id)
     if not sub:
-        await update.message.reply_text("❌ Aucun abonnement actif. Faites /abonnement.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌ Aucun abonnement actif. Faites /abonnement.", parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
         return
 
     plan = sub["plan"]
     exp = sub["expires_at"].strftime("%Y-%m-%d")
-    txt = f"✅ Plan : <b>{html.escape(plan)}</b>\n⏳ Expire : <b>{html.escape(exp)}</b>"
-
-    if plan == "VIP":
-        txt += f"\n🔗 Canal VIP : {VIP_CHANNEL_LINK}"
-
-    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
+    txt = f"✅ Plan : <b>{escape(plan)}</b>\n⏳ Expire : <b>{escape(exp)}</b>\n\n🔗 Canal : {escape(VIP_CHANNEL_LINK)}"
+    await update.message.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
 
 async def abonnement_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
@@ -603,7 +1047,7 @@ async def matches_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 leagues_all[it["label"]] = lid
 
         lines = [
-            f"📅 <b>Matchs</b> : {html.escape(date)} (saison {season})",
+            f"📅 <b>Matchs</b> : {escape(date)} (saison {season})",
             f"⚽ <b>Football</b> | max {MATCHES_PER_LEAGUE_MAX}/compétition",
             "",
         ]
@@ -624,7 +1068,7 @@ async def matches_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             fx_list = sorted(fx_list, key=kickoff_timestamp)[:MATCHES_PER_LEAGUE_MAX]
             any_found = True
 
-            lines.append(f"🏟️ <b>{html.escape(league_name)}</b>")
+            lines.append(f"🏟️ <b>{escape(league_name)}</b>")
             for fx in fx_list:
                 f = fx.get("fixture", {}) or {}
                 teams = fx.get("teams", {}) or {}
@@ -632,7 +1076,7 @@ async def matches_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 away = str((teams.get("away", {}) or {}).get("name", "?"))
                 fid = str(f.get("id", "?"))
                 hhmm = kickoff_hhmm(fx)
-                lines.append(f"• <b>{hhmm}</b> — {html.escape(home)} vs {html.escape(away)} — <code>{html.escape(fid)}</code>")
+                lines.append(f"• <b>{escape(hhmm)}</b> — {escape(home)} vs {escape(away)} — <code>{escape(fid)}</code>")
             lines.append("")
 
         if not any_found:
@@ -641,8 +1085,15 @@ async def matches_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for part in chunk_lines(lines):
             await update.message.reply_text(part, parse_mode=ParseMode.HTML)
 
+        await update.message.reply_text(
+            "🔎 Pour analyser un match : copiez son ID puis envoyez :\n"
+            "<code>/analyse ID</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_keyboard(),
+        )
+
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Erreur matches : {html.escape(str(e))}")
+        await update.message.reply_text(f"⚠️ Erreur matches : {escape(str(e))}")
 
 async def coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(update)
@@ -651,12 +1102,12 @@ async def coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sub = get_sub(chat_id)
     plan = "ADMIN" if is_admin(update) else (sub["plan"] if sub else None)
     if not plan:
-        await update.message.reply_text("🔒 Coupon réservé aux abonnés. Faites /abonnement.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("🔒 Coupon réservé aux abonnés. Faites /abonnement.", parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
         return
 
     ok, msg = can_get_coupon(chat_id, plan)
     if not ok:
-        await update.message.reply_text(f"⛔ {html.escape(msg)}", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(f"⛔ {escape(msg)}", parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
         return
 
     day = now_paris().date().isoformat()
@@ -664,18 +1115,60 @@ async def coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         row = con.execute("SELECT coupon_code, coupon_text FROM coupon_day WHERE day=?", (day,)).fetchone()
 
     if not row:
-        await update.message.reply_text("📭 Aucun coupon du jour pour le moment.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("📭 Aucun coupon du jour pour le moment.", parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
         return
 
     coupon_code, coupon_text = row
     mark_coupon_used(chat_id)
 
     txt = (
-        f"🎟️ <b>Coupon du jour</b> ({html.escape(day)})\n\n"
-        f"🔢 Code coupon : <b>{html.escape(coupon_code)}</b>\n\n"
-        f"{coupon_text}"
+        f"🎟️ <b>Coupon du jour</b> ({escape(day)})\n\n"
+        f"🔢 Code coupon : <b>{escape(coupon_code)}</b>\n\n"
+        f"{coupon_text}\n\n"
+        f"🔗 Canal : {escape(VIP_CHANNEL_LINK)}"
     )
-    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
+
+async def analyse_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    upsert_user(update)
+    chat_id = update.effective_chat.id
+
+    # Access control
+    if not is_admin(update):
+        sub = get_sub(chat_id)
+        plan = sub["plan"] if sub else None
+        if not plan:
+            await update.message.reply_text(
+                "🔒 Analyse réservée aux abonnés.\n➡️ Faites /abonnement",
+                parse_mode=ParseMode.HTML,
+                reply_markup=main_menu_keyboard()
+            )
+            return
+        ok, msg = can_analyze(chat_id, plan)
+        if not ok:
+            await update.message.reply_text(
+                f"⛔ {escape(msg)}\n\n➡️ Renouvelez/upgrade votre plan via /abonnement",
+                parse_mode=ParseMode.HTML,
+                reply_markup=main_menu_keyboard()
+            )
+            return
+
+    if not context.args:
+        await update.message.reply_text(ANALYSE_HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
+        return
+
+    fid_str = context.args[0].strip()
+    if not fid_str.isdigit():
+        await update.message.reply_text("❌ ID invalide. Exemple : <code>/analyse 123456</code>", parse_mode=ParseMode.HTML)
+        return
+
+    fid = int(fid_str)
+
+    # count usage (only for non-admin)
+    if not is_admin(update):
+        mark_analyze_used(chat_id)
+
+    await run_analysis_for_fixture(chat_id, context, fid)
 
 # =============================
 # Admin: publish coupon
@@ -735,8 +1228,105 @@ async def publier_coupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(f"✅ Coupon publié. Notifications envoyées : {sent}")
 
 # =============================
+# Admin dashboard + grant
+# =============================
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    upsert_user(update)
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Réservé à l’admin.")
+        return
+
+    now = dt.datetime.now(dt.UTC)
+    today = now_paris().date().isoformat()
+    month = now_paris().strftime("%Y-%m")
+
+    with db() as con:
+        total_users = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        active_subs = con.execute(
+            "SELECT COUNT(*) FROM subscriptions WHERE datetime(expires_at) > datetime(?)",
+            (now.isoformat(),)
+        ).fetchone()[0]
+        coupons_views_today = con.execute(
+            "SELECT COALESCE(SUM(coupons_used),0) FROM usage_day WHERE day=?",
+            (today,)
+        ).fetchone()[0]
+        analyses_month = con.execute(
+            "SELECT COALESCE(SUM(analyses_used),0) FROM usage_month WHERE month=?",
+            (month,)
+        ).fetchone()[0]
+        last_activations = con.execute(
+            "SELECT chat_id, plan, reference, created_at FROM subscription_log ORDER BY id DESC LIMIT 5"
+        ).fetchall()
+
+    lines = []
+    lines.append("📊 <b>Dashboard Admin</b>")
+    lines.append(f"👥 Utilisateurs : <b>{total_users}</b>")
+    lines.append(f"💳 Abonnés actifs : <b>{active_subs}</b>")
+    lines.append(f"🎟 Coupons consultés aujourd’hui : <b>{coupons_views_today}</b>")
+    lines.append(f"🔎 Analyses ce mois : <b>{analyses_month}</b>")
+    lines.append("")
+    lines.append("🕘 <b>5 dernières activations</b>")
+    if last_activations:
+        for cid, plan, ref, created_at in last_activations:
+            lines.append(f"• {cid} — {escape(plan)} — {escape(ref or '-')}")
+    else:
+        lines.append("• (aucune)")
+
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+async def grant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /grant VIP @username 30
+    /grant VIP 123456789 30
+    """
+    upsert_user(update)
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Réservé à l’admin.")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage:\n"
+            "<code>/grant VIP @username 30</code>\n"
+            "<code>/grant VIP 123456789 30</code>\n\n"
+            "Plans: STANDARD | VIP | VVIP",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    plan = context.args[0].strip().upper()
+    target = context.args[1].strip()
+    days = int(context.args[2]) if len(context.args) >= 3 and context.args[2].isdigit() else SUB_DURATION_DAYS
+
+    if plan not in ("STANDARD", "VIP", "VVIP"):
+        await update.message.reply_text("❌ Plan invalide (STANDARD|VIP|VVIP).")
+        return
+
+    chat_id = None
+    if target.isdigit():
+        chat_id = int(target)
+    else:
+        chat_id = find_chat_id_by_username(target)
+
+    if not chat_id:
+        await update.message.reply_text("❌ Utilisateur introuvable. Donnez un chat_id ou un @username existant dans la DB.")
+        return
+
+    exp = set_sub(chat_id, plan, reference=f"ADMIN-GRANT-{update.effective_user.id}", days=days)
+    await update.message.reply_text(
+        f"✅ Accès accordé : <b>{escape(plan)}</b> à <code>{chat_id}</code>\n"
+        f"⏳ Expire : <b>{escape(exp.strftime('%Y-%m-%d'))}</b>",
+        parse_mode=ParseMode.HTML
+    )
+
+# =============================
 # Callback handling (subscriptions + capital)
 # =============================
+def make_payment_code(plan: str, chat_id: int) -> str:
+    # Code simple, lisible, et unique par jour
+    stamp = now_paris().strftime("%Y%m%d")
+    return f"{plan}-BOSCO-{chat_id}-{stamp}"
+
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q:
@@ -748,13 +1338,16 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ---- CAPITAL
     if data == "CAP_BACK":
-        await q.edit_message_text("📌 <b>Menu</b> :", parse_mode=ParseMode.HTML)
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text="📌 <b>Menu</b> :",
             parse_mode=ParseMode.HTML,
             reply_markup=main_menu_keyboard(),
         )
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
         return
 
     if data == "CAP_RULES":
@@ -778,7 +1371,10 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("❌ Plan invalide.")
             return
 
+        chat_id = update.effective_chat.id
         pay_url = PAY_LINKS.get(plan)
+        pay_code = make_payment_code(plan, chat_id)
+
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 Payer maintenant", url=pay_url)],
             [InlineKeyboardButton("✅ J’ai déjà payé", callback_data=f"PAID_{plan}")],
@@ -786,22 +1382,31 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
         txt = (
-            f"💳 <b>Abonnement {html.escape(plan)}</b>\n\n"
+            f"💳 <b>Abonnement {escape(plan)}</b>\n\n"
+            "✅ <b>Votre code (à mettre dans Référence de paiement)</b> :\n"
+            f"<code>{escape(pay_code)}</code>\n\n"
             "1) Cliquez <b>💳 Payer maintenant</b>\n"
-            "2) Sur FedaPay, mettez votre code dans <b>Référence de paiement</b>\n"
+            "2) Sur FedaPay, collez le code ci-dessus dans <b>Référence de paiement</b>\n"
             "3) Payez\n"
             "4) Revenez ici → cliquez <b>✅ J’ai déjà payé</b>\n"
+            "5) Collez le même code\n\n"
+            "⚠️ Si la référence est différente, l’activation peut échouer."
         )
+        # stock expected code (optional UX)
+        context.user_data["expected_pay_code"] = pay_code
+        context.user_data["expected_pay_plan"] = plan
+
         await q.edit_message_text(txt, parse_mode=ParseMode.HTML, reply_markup=kb)
         return
 
     if data.startswith("PAID_"):
         plan = data.replace("PAID_", "").strip().upper()
         context.user_data["awaiting_ref_plan"] = plan
-        await q.edit_message_text(
-            "✅ Parfait. Envoyez maintenant votre <b>Référence de paiement</b> (le code que vous avez saisi).",
-            parse_mode=ParseMode.HTML
-        )
+        expected = context.user_data.get("expected_pay_code")
+        txt = "✅ Parfait. Envoyez maintenant votre <b>Référence de paiement</b> (le code).\n"
+        if expected:
+            txt += f"\n💡 Code attendu : <code>{escape(str(expected))}</code>"
+        await q.edit_message_text(txt, parse_mode=ParseMode.HTML)
         return
 
 # =============================
@@ -816,7 +1421,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # CAPITAL FLOW
     # =========================
     if context.user_data.get("awaiting_capital_amount"):
-        # Expect amount
         s = msg.replace(" ", "").replace(",", "").replace("f", "").replace("F", "")
         if not re.fullmatch(r"\d+(\.\d+)?", s):
             await update.message.reply_text("❌ Envoyez un montant valide (ex: 100000).")
@@ -855,10 +1459,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             "✅ <b>Résultat</b>\n\n"
-            f"💼 Capital : <b>{html.escape(format_amount(amount))}</b>\n"
+            f"💼 Capital : <b>{escape(format_amount(amount))}</b>\n"
             f"🔢 Code : <b>{code}</b> match(s)\n"
             f"📊 Pourcentage : <b>{int(pct*100)}%</b>\n"
-            f"🎯 Mise conseillée : <b>{html.escape(format_amount(stake))}</b>\n\n"
+            f"🎯 Mise conseillée : <b>{escape(format_amount(stake))}</b>\n\n"
             "📌 Pour recommencer : /capital",
             parse_mode=ParseMode.HTML,
             reply_markup=main_menu_keyboard(),
@@ -877,27 +1481,25 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not ok:
                 await tmp.edit_text(
                     "❌ Paiement non confirmé.\n\n"
-                    f"📌 Détail : {html.escape(detail)}\n\n"
+                    f"📌 Détail : {escape(detail)}\n\n"
                     "Vérifiez la référence et réessayez.",
                     parse_mode=ParseMode.HTML
                 )
                 return
 
-            exp = set_sub(chat_id, plan_wait)
+            exp = set_sub(chat_id, plan_wait, reference=ref, days=SUB_DURATION_DAYS)
             context.user_data.pop("awaiting_ref_plan", None)
 
             txt = (
-                f"✅ <b>Abonnement {html.escape(plan_wait)} activé</b>\n"
-                f"⏳ Expire le : <b>{html.escape(exp.strftime('%Y-%m-%d'))}</b>\n"
+                f"✅ <b>Abonnement {escape(plan_wait)} activé</b>\n"
+                f"⏳ Expire le : <b>{escape(exp.strftime('%Y-%m-%d'))}</b>\n\n"
+                f"🔗 Canal : {escape(VIP_CHANNEL_LINK)}"
             )
-            if plan_wait == "VIP":
-                txt += f"\n🔗 Canal VIP : {VIP_CHANNEL_LINK}"
-
-            await tmp.edit_text(txt, parse_mode=ParseMode.HTML)
+            await tmp.edit_text(txt, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
             return
 
         except Exception as e:
-            await tmp.edit_text(f"⚠️ Erreur vérification : {html.escape(str(e))}", parse_mode=ParseMode.HTML)
+            await tmp.edit_text(f"⚠️ Erreur vérification : {escape(str(e))}", parse_mode=ParseMode.HTML)
             return
 
     # =========================
@@ -910,7 +1512,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if msg == "📅 Matchs":
-        await update.message.reply_text("📅 Choisissez : /matches | /matches demain | /matches AAAA-MM-JJ")
+        await update.message.reply_text("📅 Choisissez : /matches | /matches demain | /matches AAAA-MM-JJ", reply_markup=main_menu_keyboard())
+        return
+
+    if msg == "🔎 Analyse":
+        await update.message.reply_text(ANALYSE_HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
         return
 
     if msg == "🎟️ Coupon du jour":
@@ -923,6 +1529,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if msg == "💰 Capital":
         await capital_cmd(update, context)
+        return
+
+    if msg == "✅ Statut":
+        await status_cmd(update, context)
         return
 
     if msg == "❓ Aide":
@@ -957,9 +1567,13 @@ def main():
     app.add_handler(CommandHandler("description", description_cmd))
     app.add_handler(CommandHandler("matches", matches_cmd))
     app.add_handler(CommandHandler("coupon", coupon_cmd))
+    app.add_handler(CommandHandler("analyse", analyse_cmd))
+    app.add_handler(CommandHandler("analyze", analyse_cmd))  # alias
 
     # admin
     app.add_handler(CommandHandler("publier_coupon", publier_coupon_cmd))
+    app.add_handler(CommandHandler("admin", admin_cmd))
+    app.add_handler(CommandHandler("grant", grant_cmd))
 
     # callbacks
     app.add_handler(CallbackQueryHandler(callbacks))
